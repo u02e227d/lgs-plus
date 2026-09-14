@@ -29,12 +29,28 @@ void main() {
     expect(merged.isPaid, isFalse);
   });
 
-  test('サーバーが有料ならローカルも有料にする', () {
-    final merged = LgsplusCloud.applyServer(user(), {
-      'plan': 'paid',
-      'access_until': '2026-09-01',
-    });
+  test('サーバーが有料なら特典期限内のローカルも有料にする', () {
+    final merged = LgsplusCloud.applyServer(
+      user(accessUntil: DateTime(2026, 9, 20)),
+      {
+        'plan': 'paid',
+        'access_until': '2026-09-20',
+      },
+    );
     expect(merged.isPaid, isTrue);
+  });
+
+  test('解約して期限切れならサーバーの有料残日で番号ページを戻さない', () {
+    final local = user(
+      accessUntil: DateTime(2026, 9, 13),
+    );
+    expect(local.hasFullAccess(DateTime(2026, 9, 14)), isFalse);
+    final merged = LgsplusCloud.applyServer(local, {
+      'plan': 'paid',
+      'access_until': '2026-10-14 12:00:00',
+    });
+    expect(merged.isPaid, isFalse);
+    expect(merged.hasFullAccess(DateTime(2026, 9, 14)), isFalse);
   });
 
   test('Apple期限切れは有料を落とす', () {
@@ -89,6 +105,18 @@ void main() {
       'access_until': '2026-09-02',
     });
     expect(merged.accessUntil, DateTime(2026, 10, 1));
+  });
+
+  test('同期ペイロードに端末IDと占有フラグを付ける', () {
+    final payload = LgsplusCloud.toPayload(
+      user(),
+      deviceId: 'dev-1',
+      claim: true,
+      deviceLabel: 'iOS',
+    );
+    expect(payload['device_id'], 'dev-1');
+    expect(payload['claim'], 1);
+    expect(payload['device_label'], 'iOS');
   });
 
   test('テストユーザーの余り試用はサーバー期限で戻さない', () {

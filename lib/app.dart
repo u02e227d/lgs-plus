@@ -43,8 +43,32 @@ class LgsPlusApp extends StatelessWidget {
   }
 }
 
-class _RootGate extends StatelessWidget {
+class _RootGate extends StatefulWidget {
   const _RootGate();
+
+  @override
+  State<_RootGate> createState() => _RootGateState();
+}
+
+class _RootGateState extends State<_RootGate> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      context.read<AppState>().checkDeviceSession();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

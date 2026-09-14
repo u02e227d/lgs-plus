@@ -250,6 +250,12 @@ class S {
   String get sitesTitle =>
       _p('LGS+積算 現場一覧', 'LGS+ Sites', 'LGS+積算 现场一览', 'LGS+ Danh sách công trường');
   String get logout => _p('ログアウト', 'Log out', '退出登录', 'Đăng xuất');
+  String get sessionKicked => _p(
+        'このアカウントは別の端末でログインしたため、こちらはログアウトしました。同時に使える端末は1台です。',
+        'This account signed in on another device, so you were signed out here. Only one device can be used at a time.',
+        '此账号已在其他设备登录，本机已退出。同一账号同时只能使用一台设备。',
+        'Tài khoản đã đăng nhập trên thiết bị khác nên máy này bị đăng xuất. Chỉ dùng được một thiết bị cùng lúc.',
+      );
   String get newSite => _p('新規現場', 'New site', '新建现场', 'Công trường mới');
   String get freeBanner => _p(
         '無料版：図面アップロード・スケール設定・図面測定のみ。試算表・材料・注文は有料または特典期間中に利用できます。',

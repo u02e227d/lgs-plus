@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/models.dart';
 import 'account_plan.dart';
+import 'device_session.dart';
 
 /// ショップ API への同期。圏外でもアプリは動く（失敗は無視）。
 class LgsplusCloud {
@@ -81,9 +82,20 @@ class LgsplusCloud {
     }
   }
 
-  static Future<AppUser?> sync(AppUser user) async {
+  static Future<AppUser?> sync(
+    AppUser user, {
+    String? deviceId,
+    bool claim = false,
+    String deviceLabel = '',
+  }) async {
     if (!enabled) return null;
     try {
+      final payload = toPayload(
+        user,
+        deviceId: deviceId,
+        claim: claim,
+        deviceLabel: deviceLabel,
+      );
       final res = await http
           .post(
             Uri.parse('$baseUrl/syncUser'),
@@ -91,7 +103,7 @@ class LgsplusCloud {
               'Content-Type': 'application/json; charset=utf-8',
               'X-Lgsplus-Key': appKey,
             },
-            body: jsonEncode(toPayload(user)),
+            body: jsonEncode(payload),
           )
           .timeout(const Duration(seconds: 4));
       if (res.statusCode != 200) return null;
@@ -99,6 +111,9 @@ class LgsplusCloud {
       if (decoded is! Map) return null;
       if (decoded['success'] != 1) {
         final message = '${decoded['message'] ?? ''}';
+        if (DeviceSession.isKickedMessage(message)) {
+          throw const SessionKickedException();
+        }
         if (message.contains('既に登録')) {
           throw Exception(message);
         }
@@ -106,7 +121,16 @@ class LgsplusCloud {
       }
       final data = decoded['data'];
       if (data is! Map) return null;
-      return applyServer(user, Map<String, dynamic>.from(data));
+      final map = Map<String, dynamic>.from(data);
+      if (DeviceSession.isKickedMessage('${map['session_kicked'] ?? ''}')) {
+        throw const SessionKickedException();
+      }
+      if (map['session_kicked'] == 1 || map['session_kicked'] == true) {
+        throw const SessionKickedException();
+      }
+      return applyServer(user, map);
+    } on SessionKickedException {
+      rethrow;
     } on Exception catch (e) {
       if (e.toString().contains('既に登録')) rethrow;
       return null;
@@ -115,7 +139,35 @@ class LgsplusCloud {
     }
   }
 
-  static Map<String, dynamic> toPayload(AppUser user) => {
+  static Future<void> releaseDevice({
+    required String userId,
+    required String deviceId,
+  }) async {
+    if (!enabled || userId.isEmpty || deviceId.isEmpty) return;
+    try {
+      await http
+          .post(
+            Uri.parse('$baseUrl/releaseDevice'),
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              'X-Lgsplus-Key': appKey,
+            },
+            body: jsonEncode({
+              'user_id': userId,
+              'device_id': deviceId,
+            }),
+          )
+          .timeout(const Duration(seconds: 4));
+    } catch (_) {}
+  }
+
+  static Map<String, dynamic> toPayload(
+    AppUser user, {
+    String? deviceId,
+    bool claim = false,
+    String deviceLabel = '',
+  }) =>
+      {
         'id': user.id,
         'company_name': user.companyName,
         'contact_name': user.contactName,
@@ -126,6 +178,9 @@ class LgsplusCloud {
         'plan': user.isPaid ? 'paid' : 'free',
         'access_until': user.accessUntil.toIso8601String(),
         'activated': user.activated ? 1 : 0,
+        if (deviceId != null && deviceId.isNotEmpty) 'device_id': deviceId,
+        'claim': claim ? 1 : 0,
+        if (deviceLabel.isNotEmpty) 'device_label': deviceLabel,
       };
 
   static AppUser applyServer(AppUser local, Map<String, dynamic> data) {
@@ -134,15 +189,16 @@ class LgsplusCloud {
     if (_endedApple.contains(apple)) {
       next = next.copyWith(plan: SubscriptionPlan.free);
     } else if (data['plan'] == 'paid' && !next.isPaid) {
-      // テストユーザーは端末の余り試用を見せる。サーバー有料で解除しない
-      if (local.email != 'test@lgsplus.local') {
+      // テストユーザー／解約直後はサーバーの有料フラグで戻さない
+      if (local.email != 'test@lgsplus.local' && local.hasFullAccess()) {
         next = next.copyWith(plan: SubscriptionPlan.paid);
       }
     }
     final until = parseDate(data['access_until']);
     if (until != null &&
         until.isAfter(next.accessUntil) &&
-        !(local.email == 'test@lgsplus.local' && !local.isPaid)) {
+        !(local.email == 'test@lgsplus.local' && !local.isPaid) &&
+        (next.isPaid || '${data['plan']}' != 'paid')) {
       final extra = until.difference(next.accessUntil).inDays;
       final serverNotice = '${data['pending_notice'] ?? ''}'.trim();
       next = next.copyWith(

@@ -11,6 +11,7 @@ import '../l10n/locale_controller.dart';
 import '../models/models.dart';
 import 'account_plan.dart';
 import 'account_recovery.dart';
+import 'device_session.dart';
 import 'lgsplus_cloud.dart';
 
 /// 認証（オフラインデモ：メール活性化リンク相当をローカルで模擬）
@@ -108,7 +109,7 @@ class AuthService {
     }
     await _db.upsertUser(activated);
     await _db.setSession('current_user_id', activated.id);
-    return _syncCloud(activated);
+    return _syncCloud(activated, claim: true);
   }
 
   Future<AppUser> login({
@@ -124,7 +125,7 @@ class AuthService {
       throw Exception(_s.badLogin);
     }
     await _db.setSession('current_user_id', user.id);
-    return _syncCloud(user);
+    return _syncCloud(user, claim: true);
   }
 
   Future<AppUser?> currentUser() async {
@@ -170,7 +171,7 @@ class AuthService {
   }
 
   Future<AppUser> cancelPaidPlan(AppUser user) async {
-    final next = user.copyWith(plan: SubscriptionPlan.free);
+    final next = AccountPlan.cancelPaid(user, DateTime.now());
     await _db.upsertUser(next);
     return _syncCloud(next);
   }
@@ -247,24 +248,63 @@ class AuthService {
     return user;
   }
 
-  Future<AppUser> syncFromCloud(AppUser user) => _syncCloud(user);
+  Future<AppUser> syncFromCloud(AppUser user, {bool claim = false}) =>
+      _syncCloud(user, claim: claim);
 
-  Future<AppUser> _syncCloud(AppUser user) async {
+  Future<AppUser> _syncCloud(AppUser user, {bool claim = false}) async {
+    if (!DeviceSession.enforceFor(user.email)) {
+      try {
+        final merged = await LgsplusCloud.sync(user);
+        if (merged == null) return user;
+        if (merged.plan != user.plan ||
+            merged.accessUntil != user.accessUntil ||
+            merged.pendingNotice != user.pendingNotice) {
+          await _db.upsertUser(merged);
+        }
+        return merged;
+      } catch (_) {
+        return user;
+      }
+    }
+    final pending = await _db.getSession('pending_session_claim') == '1';
+    final take = claim || pending;
     try {
-      final merged = await LgsplusCloud.sync(user);
-      if (merged == null) return user;
+      final merged = await LgsplusCloud.sync(
+        user,
+        deviceId: await DeviceSession.id(),
+        claim: take,
+        deviceLabel: Platform.isIOS ? 'iOS' : 'Android',
+      );
+      if (merged == null) {
+        if (take) await _db.setSession('pending_session_claim', '1');
+        return user;
+      }
+      await _db.setSession('pending_session_claim', '0');
       if (merged.plan != user.plan ||
           merged.accessUntil != user.accessUntil ||
           merged.pendingNotice != user.pendingNotice) {
         await _db.upsertUser(merged);
       }
       return merged;
+    } on SessionKickedException {
+      await logout(releaseCloud: false);
+      rethrow;
     } catch (_) {
+      if (take) await _db.setSession('pending_session_claim', '1');
       return user;
     }
   }
 
-  Future<void> logout() async {
+  Future<void> logout({bool releaseCloud = true}) async {
+    if (releaseCloud) {
+      final id = await _db.getSession('current_user_id');
+      if (id != null && id.isNotEmpty) {
+        await LgsplusCloud.releaseDevice(
+          userId: id,
+          deviceId: await DeviceSession.id(),
+        );
+      }
+    }
     await _db.clearSession();
   }
 }

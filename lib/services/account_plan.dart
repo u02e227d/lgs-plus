@@ -69,4 +69,12 @@ class AccountPlan {
       pendingNotice: bonusNotice,
     );
   }
+
+  /// 有料をやめたらプランも有料で足した日数もすぐ消す（番号ページを見られない）
+  static AppUser cancelPaid(AppUser user, DateTime now) {
+    return user.copyWith(
+      plan: SubscriptionPlan.free,
+      accessUntil: now.subtract(const Duration(days: 1)),
+    );
+  }
 }

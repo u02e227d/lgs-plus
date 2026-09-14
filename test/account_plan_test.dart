@@ -84,4 +84,22 @@ void main() {
     expect(next.accessUntil, DateTime(2026, 9, 21, 10));
     expect(next.pendingNotice, AccountPlan.bonusNotice);
   });
+
+  test('有料をやめたら日数も消えて番号ページは見られない', () {
+    final now = DateTime(2026, 9, 14, 10);
+    final paid = AppUser(
+      id: 'p',
+      companyName: '有料',
+      address: '',
+      contactName: '有料',
+      phone: '090',
+      email: 'p@b.c',
+      plan: SubscriptionPlan.paid,
+      accessUntil: DateTime(2026, 10, 14, 10),
+    );
+    expect(paid.hasFullAccess(now), isTrue);
+    final canceled = AccountPlan.cancelPaid(paid, now);
+    expect(canceled.isPaid, isFalse);
+    expect(canceled.hasFullAccess(now), isFalse);
+  });
 }

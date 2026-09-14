@@ -25,7 +25,7 @@ class _AccountScreenState extends State<AccountScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final state = context.read<AppState>();
       if (state.user != null) {
-        await state.setUser(await state.auth.syncFromCloud(state.user!));
+        await state.checkDeviceSession();
       }
       await _showNoticeIfNeeded();
     });

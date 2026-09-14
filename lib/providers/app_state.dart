@@ -5,6 +5,7 @@ import '../data/database.dart';
 import '../models/models.dart';
 import '../services/auth_service.dart';
 import '../services/calc_engine.dart';
+import '../services/device_session.dart';
 
 class AppState extends ChangeNotifier {
   AppState() {
@@ -20,6 +21,7 @@ class AppState extends ChangeNotifier {
 
   AppUser? user;
   bool booting = true;
+  bool sessionKicked = false;
   List<SiteProject> projects = [];
 
   AuthService get auth => _auth;
@@ -43,17 +45,30 @@ class AppState extends ChangeNotifier {
       booting = false;
       notifyListeners();
     }
+    await checkDeviceSession();
+  }
+
+  Future<void> checkDeviceSession({bool claim = false}) async {
     final current = user;
     if (current == null) return;
     try {
-      final merged = await _auth.syncFromCloud(current);
+      final merged = await _auth.syncFromCloud(current, claim: claim);
       if (user?.id == merged.id) {
         user = merged;
         notifyListeners();
       }
+    } on SessionKickedException {
+      await _signOutLocal();
     } catch (_) {
       // 圏外・サーバーエラーでもアプリは使える
     }
+  }
+
+  Future<void> _signOutLocal() async {
+    sessionKicked = true;
+    user = null;
+    projects = [];
+    notifyListeners();
   }
 
   Future<void> refreshProjects() async {
@@ -70,10 +85,17 @@ class AppState extends ChangeNotifier {
   Future<void> setUser(AppUser? u) async {
     user = u;
     if (u != null) {
+      sessionKicked = false;
       projects = await _db.listProjects();
     } else {
       projects = [];
     }
+    notifyListeners();
+  }
+
+  void clearSessionKickNotice() {
+    if (!sessionKicked) return;
+    sessionKicked = false;
     notifyListeners();
   }
 

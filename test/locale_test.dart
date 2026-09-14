@@ -40,5 +40,7 @@ void main() {
     expect(const S(AppLang.zh).pickEstimateToOrder, contains('试算表'));
     expect(const S(AppLang.zh).feedbackTitle, contains('意见'));
     expect(const S(AppLang.ja).feedbackOpinion, '意見');
+    expect(const S(AppLang.zh).sessionKicked, contains('一台'));
+    expect(const S(AppLang.ja).sessionKicked, contains('1台'));
   });
 }

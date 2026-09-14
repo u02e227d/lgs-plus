@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../l10n/locale_controller.dart';
 import '../../legal/legal_documents.dart';
 import '../../providers/app_state.dart';
+import '../../services/device_session.dart';
 import '../../theme/app_theme.dart';
 import 'find_email_screen.dart';
 import 'forgot_password_screen.dart';
@@ -35,6 +36,7 @@ class _LoginScreenState extends State<LoginScreen> {
       _busy = true;
       _error = null;
     });
+    context.read<AppState>().clearSessionKickNotice();
     try {
       final state = context.read<AppState>();
       final user = await state.auth.login(
@@ -42,6 +44,8 @@ class _LoginScreenState extends State<LoginScreen> {
         password: _password.text,
       );
       await state.setUser(user);
+    } on SessionKickedException {
+      setState(() => _error = S.of(context).sessionKicked);
     } catch (e) {
       setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
     } finally {
@@ -88,6 +92,8 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final s = S.of(context);
+    final state = context.watch<AppState>();
+    final error = _error ?? (state.sessionKicked ? s.sessionKicked : null);
     return Scaffold(
       body: Stack(
         fit: StackFit.expand,
@@ -156,10 +162,10 @@ class _LoginScreenState extends State<LoginScreen> {
                               _fieldLink(s.forgotPassword, () {
                                 _open(const ForgotPasswordScreen());
                               }),
-                              if (_error != null) ...[
+                              if (error != null) ...[
                                 const SizedBox(height: 10),
                                 Text(
-                                  _error!,
+                                  error,
                                   style: const TextStyle(color: AppTheme.danger),
                                 ),
                               ],
