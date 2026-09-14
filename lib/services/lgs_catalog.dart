@@ -9,6 +9,7 @@ import '../models/models.dart';
 enum LgsForm {
   form20, // 軽量・部分間仕切
   form25, // 薄壁・下地補助
+  form38, // ランナー／軽間仕切
   form40, // 改修・軽間仕切
   form45, // 改修・軽間仕切で多用
   form50, // WS-50 / 高さ〜2.7m / 片面張り向け
@@ -25,6 +26,8 @@ extension LgsFormX on LgsForm {
         return '20形';
       case LgsForm.form25:
         return '25形';
+      case LgsForm.form38:
+        return '38形';
       case LgsForm.form40:
         return '40形';
       case LgsForm.form45:
@@ -49,6 +52,8 @@ extension LgsFormX on LgsForm {
         return 20;
       case LgsForm.form25:
         return 25;
+      case LgsForm.form38:
+        return 38;
       case LgsForm.form40:
         return 40;
       case LgsForm.form45:
@@ -72,6 +77,7 @@ extension LgsFormX on LgsForm {
       case LgsForm.form20:
       case LgsForm.form25:
         return 35;
+      case LgsForm.form38:
       case LgsForm.form40:
       case LgsForm.form45:
         return 40;
@@ -93,6 +99,7 @@ extension LgsFormX on LgsForm {
       case LgsForm.form20:
       case LgsForm.form25:
         return 2400;
+      case LgsForm.form38:
       case LgsForm.form40:
       case LgsForm.form45:
         return 2700;
@@ -113,6 +120,7 @@ extension LgsFormX on LgsForm {
     switch (this) {
       case LgsForm.form20:
       case LgsForm.form25:
+      case LgsForm.form38:
       case LgsForm.form40:
       case LgsForm.form45:
       case LgsForm.form50:

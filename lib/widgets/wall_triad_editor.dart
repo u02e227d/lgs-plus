@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/s_measure.dart';
 import '../theme/app_theme.dart';
 import 'measure_painters.dart';
 
@@ -29,9 +30,9 @@ class WallHighlightColorBar extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Text(
-                '線色',
-                style: TextStyle(
+              Text(
+                Ms.of(context).lineColor,
+                style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w800,
                   color: AppTheme.steel,
@@ -60,7 +61,7 @@ class WallHighlightColorBar extends StatelessWidget {
               ],
               const Spacer(),
               Text(
-                '太さ ${strokeWidth.toStringAsFixed(0)}',
+                Ms.of(context).strokeW(strokeWidth.toStringAsFixed(0)),
                 style: const TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
@@ -71,9 +72,9 @@ class WallHighlightColorBar extends StatelessWidget {
           ),
           Row(
             children: [
-              const Text(
-                '線太さ',
-                style: TextStyle(
+              Text(
+                Ms.of(context).strokeLabel,
+                style: const TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
                   color: AppTheme.steel,
@@ -92,9 +93,9 @@ class WallHighlightColorBar extends StatelessWidget {
               ),
             ],
           ),
-          const Text(
-            '線尾番号＝線ごと｜タップ→工法・試算／削除｜長押し→削除',
-            style: TextStyle(fontSize: 11, color: AppTheme.steel),
+          Text(
+            Ms.of(context).triadHint,
+            style: const TextStyle(fontSize: 11, color: AppTheme.steel),
           ),
         ],
       ),

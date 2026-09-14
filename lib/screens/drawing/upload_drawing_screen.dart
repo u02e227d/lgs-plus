@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:pdfx/pdfx.dart';
 import 'package:provider/provider.dart';
 
+import '../../l10n/locale_controller.dart';
 import '../../models/models.dart';
 import '../../providers/app_state.dart';
 import '../../services/auth_service.dart';
@@ -72,7 +73,9 @@ class _UploadDrawingScreenState extends State<UploadDrawingScreen> {
         );
         await page.close();
         await doc.close();
-        if (pageImage == null) throw Exception('PDFレンダリングに失敗しました');
+        if (pageImage == null) {
+          throw Exception(LocaleController.instance.strings.pdfRenderFailed);
+        }
         saved = await DrawingImportService.persistBytes(
           pageImage.bytes,
           '${f.name}.png',
@@ -95,7 +98,7 @@ class _UploadDrawingScreenState extends State<UploadDrawingScreen> {
       if (!mounted) return;
       setState(() => _drawing = stored);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('図面を保存しました。続けて比例尺を設定してください')),
+        SnackBar(content: Text(S.of(context).drawingSavedSetScale)),
       );
       await _goScale(stored);
     } catch (e) {
@@ -108,10 +111,10 @@ class _UploadDrawingScreenState extends State<UploadDrawingScreen> {
     }
   }
 
-  Future<void> _importImage({required bool camera}) async {
+  Future<void> _importFromAlbum() async {
     final picker = ImagePicker();
     final x = await picker.pickImage(
-      source: camera ? ImageSource.camera : ImageSource.gallery,
+      source: ImageSource.gallery,
       imageQuality: 95,
     );
     if (x == null) return;
@@ -133,7 +136,7 @@ class _UploadDrawingScreenState extends State<UploadDrawingScreen> {
       if (!mounted) return;
       setState(() => _drawing = stored);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('図面を保存しました。続けて比例尺を設定してください')),
+        SnackBar(content: Text(S.of(context).drawingSavedSetScale)),
       );
       await _goScale(stored);
     } catch (e) {
@@ -160,33 +163,28 @@ class _UploadDrawingScreenState extends State<UploadDrawingScreen> {
   @override
   Widget build(BuildContext context) {
     final d = _drawing;
+    final s = S.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('図面アップロード')),
+      appBar: AppBar(title: Text(s.uploadDrawing)),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          const Text(
-            '①フォルダ → ②アルバム → ③カメラ撮影の順で図面を取り込み、既知寸法で比例尺を設定します。',
-            style: TextStyle(color: AppTheme.steel),
+          Text(
+            s.uploadIntro,
+            style: const TextStyle(color: AppTheme.steel),
           ),
           const SizedBox(height: 16),
           if (_busy) const LinearProgressIndicator(),
           ElevatedButton.icon(
             onPressed: _busy ? null : _importFromFolder,
             icon: const Icon(Icons.folder_open),
-            label: const Text('① フォルダから選択（PDF / 画像）'),
+            label: Text(s.fromFolder),
           ),
           const SizedBox(height: 10),
           OutlinedButton.icon(
-            onPressed: _busy ? null : () => _importImage(camera: false),
+            onPressed: _busy ? null : _importFromAlbum,
             icon: const Icon(Icons.photo_library_outlined),
-            label: const Text('② アルバムから選択'),
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton.icon(
-            onPressed: _busy ? null : () => _importImage(camera: true),
-            icon: const Icon(Icons.photo_camera_outlined),
-            label: const Text('③ カメラで撮影・計測'),
+            label: Text(s.fromAlbum),
           ),
           if (d != null) ...[
             const SizedBox(height: 24),
@@ -203,8 +201,8 @@ class _UploadDrawingScreenState extends State<UploadDrawingScreen> {
                       child: Image.file(
                         File(d.localPath),
                         fit: BoxFit.contain,
-                        errorBuilder: (_, __, ___) => const Center(
-                          child: Text('プレビュー不可'),
+                        errorBuilder: (_, __, ___) => Center(
+                          child: Text(s.previewUnavailable),
                         ),
                       ),
                     ),
@@ -213,12 +211,12 @@ class _UploadDrawingScreenState extends State<UploadDrawingScreen> {
                     title: Text(d.fileName),
                     subtitle: Text(
                       d.scalePxPerMm == null
-                          ? 'スケール未設定'
-                          : 'K = ${d.scalePxPerMm!.toStringAsFixed(4)} px/mm',
+                          ? s.scaleUnset
+                          : s.scaleK(d.scalePxPerMm!.toStringAsFixed(4)),
                     ),
                     trailing: TextButton(
                       onPressed: () => _goScale(d),
-                      child: const Text('スケール設定'),
+                      child: Text(s.setScale),
                     ),
                   ),
                 ],
@@ -227,7 +225,7 @@ class _UploadDrawingScreenState extends State<UploadDrawingScreen> {
             const SizedBox(height: 12),
             ElevatedButton(
               onPressed: () => Navigator.pop(context, d),
-              child: const Text('完了'),
+              child: Text(s.done),
             ),
           ],
         ],

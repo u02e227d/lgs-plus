@@ -3,9 +3,13 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../l10n/app_lang.dart';
+import '../l10n/locale_controller.dart';
+import '../l10n/s_measure.dart';
 import '../models/models.dart';
 import '../services/estimate_builder.dart';
 import '../theme/app_theme.dart';
+import 'keyboard_done.dart';
 
 /// 試算表レイアウト（横画面固定・複数ページ）
 class OrderEstimateForm extends StatefulWidget {
@@ -21,9 +25,16 @@ class OrderEstimateForm extends StatefulWidget {
     this.areaLabel = '壁',
     this.areaM2,
     this.lgsAreaM2,
+    this.lgsMethodLabel,
     this.boardAreaM2,
+    this.boardAreaParts = const [],
     this.rockFeltM,
     this.glassWoolM2,
+    this.dropLengthMm,
+    this.dropWidthMm,
+    this.dropHeightMm,
+    this.dropShapeLabel,
+    this.dropTurnWidths = const [],
     this.initialFilter,
     this.lockFilter = false,
     this.onSavePersist,
@@ -36,18 +47,27 @@ class OrderEstimateForm extends StatefulWidget {
   final String? sitePhone;
   final String? siteContact;
   final String appBarTitle;
-  /// 壁 / 天井
+  /// 壁 / 天井 / 下り
   final String areaLabel;
   /// 平米数（互換・未使用時は LGS/ボードに分解表示）
   final double? areaM2;
   /// LGS 下地面積 (㎡)
   final double? lgsAreaM2;
+  /// LGS 工法（SQ工法 / 在来工法 / コの字45 等）
+  final String? lgsMethodLabel;
   /// 石膏ボード面積 (㎡)＝壁面積×層数（両面なら合算）
   final double? boardAreaM2;
+  /// 品名ごとのボード面積
+  final List<({String name, double m2})> boardAreaParts;
   /// ロックフェルト総延長 (m)
   final double? rockFeltM;
   /// グラスウール総面積 (㎡)
   final double? glassWoolM2;
+  final double? dropLengthMm;
+  final double? dropWidthMm;
+  final double? dropHeightMm;
+  final String? dropShapeLabel;
+  final List<DropTurnWidth> dropTurnWidths;
   /// 初期フィルタ（保存済み表を開くとき）
   final EstimateSheetKind? initialFilter;
   /// フィルタ切替不可（保存済み単票）
@@ -83,7 +103,7 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
         .map(
           (e) => EstimateLine(
             id: e.id,
-            name: e.name,
+            name: EstimateBuilder.catalogItemName(e.name),
             spec: e.spec,
             lw: e.lw,
             lengthMm: e.lengthMm,
@@ -91,10 +111,13 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
             unit: e.unit,
             subtotal: e.subtotal,
             wastePercent: e.wastePercent,
-            note: '',
+            note: e.note,
             wallHeightMm: e.wallHeightMm,
             wallLineNumber: e.wallLineNumber,
             wallLineColorArgb: e.wallLineColorArgb,
+            areaKind: e.areaKind.isNotEmpty
+                ? e.areaKind
+                : EstimateBuilder.resolveAreaKind(e),
           ),
         )
         .toList();
@@ -105,6 +128,8 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
 
   List<EstimateLine> _visibleLines() {
     if (_filter == null) return List<EstimateLine>.from(_allLines);
+    // クロス専用など単票で渡された行は、再分類で落とさない
+    if (widget.lockFilter) return List<EstimateLine>.from(_allLines);
     return EstimateBuilder.filterByKind(_allLines, _filter!);
   }
 
@@ -116,6 +141,10 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
         _lines = List<EstimateLine>.from(_allLines);
       } else if (kind == EstimateSheetKind.board) {
         _lines = _allLines.where(EstimateBuilder.isBoardLine).toList();
+      } else if (kind == EstimateSheetKind.cross) {
+        _lines = _allLines.where(EstimateBuilder.isCrossLine).toList();
+      } else if (kind == EstimateSheetKind.drop) {
+        _lines = _allLines.where(EstimateBuilder.isDropLine).toList();
       } else {
         _lines = _allLines.where(EstimateBuilder.isLgsLine).toList();
       }
@@ -137,11 +166,14 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
   Future<void> _save() async {
     if (_filter == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('「ボードのみ表示」または「LGSのみ表示」を選んでから保存してください'),
+        SnackBar(
+          content: Text(Ms.of(context).pickKindFirst),
         ),
       );
       return;
+    }
+    for (final e in _lines) {
+      e.name = EstimateBuilder.catalogItemName(e.name);
     }
     final result = EstimateSaveResult(
       kind: _filter!,
@@ -153,7 +185,9 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('${result.kind.label}を保存しました'),
+          content: Text(Ms.of(context).savedKind(
+            Ms.of(context).estimateKindTitle(result.kind.label),
+          )),
           duration: const Duration(seconds: 2),
         ),
       );
@@ -199,13 +233,7 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
   }
 
   /// 画ペンに対応：壁マウス→「壁」、天井マウス→「天井」
-  String _areaKindLabel(String raw) {
-    final t = raw.trim();
-    if (t == '天井' || t.startsWith('天井')) return '天井';
-    if (t == '壁' || t.startsWith('壁')) return '壁';
-    if (t.contains('天井') && t.contains('壁')) return '壁/天井';
-    return t.isEmpty ? '壁' : t;
-  }
+  String _areaKindLabel(String raw) => Ms.of(context).displayArea(raw);
 
   String _fmtArea(double? m2) {
     if (m2 == null) return '—';
@@ -215,6 +243,42 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
   }
 
   Widget _areaMetersBlock() {
+    if (_filter == EstimateSheetKind.drop ||
+        (widget.dropLengthMm != null && widget.dropLengthMm! > 0)) {
+      final L = widget.dropLengthMm ?? 0;
+      final W = widget.dropWidthMm ?? 0;
+      final H = widget.dropHeightMm ?? 0;
+      final shape = Ms.of(context).displayDropShape(widget.dropShapeLabel ?? '下り');
+      final widthParts = <String>[
+        if (W > 0) '${dropWidthCircleLabel(1)} ${W.round()} mm',
+        for (final t in widget.dropTurnWidths)
+          if (t.widthMm > 0)
+            '${dropWidthCircleLabel(t.turnIndex)} ${t.widthMm.round()} mm',
+      ];
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            shape,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${Ms.of(context).dropLenH} ${L.round()} mm　${Ms.of(context).height} ${H.round()} mm',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          ),
+          if (widthParts.isNotEmpty)
+            Text(
+              widthParts.join('　'),
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+            ),
+          Text(
+            '${widthParts.length > 1 ? Ms.of(context).dropAreaMulti : Ms.of(context).dropAreaSimple}　${_fmtArea(widget.areaM2)} ㎡',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          ),
+        ],
+      );
+    }
     final lgs = widget.lgsAreaM2;
     final board = widget.boardAreaM2;
     final rock = widget.rockFeltM;
@@ -222,7 +286,7 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
     final hasSplit = (lgs != null && lgs > 0) || (board != null && board > 0);
     if (!hasSplit) {
       return Text(
-        '平米数　${_fmtArea(widget.areaM2)}　㎡',
+        Ms.of(context).areaSq(_fmtArea(widget.areaM2)),
         style: const TextStyle(
           fontSize: 14,
           fontWeight: FontWeight.w700,
@@ -230,14 +294,15 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
       );
     }
 
-    Widget cell(String label, String value) {
+    Widget cell(String text) {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
           border: Border.all(color: AppTheme.navy.withValues(alpha: 0.35)),
         ),
         child: Text(
-          '$label　$value',
+          text,
+          softWrap: false,
           style: const TextStyle(
             fontSize: 12,
             fontWeight: FontWeight.w800,
@@ -246,18 +311,27 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
       );
     }
 
+    final ms = Ms.of(context);
+    final method = ms.displayMethod((widget.lgsMethodLabel ?? '').trim());
+    final lgsText = method.isEmpty
+        ? 'LGS　${_fmtArea(lgs)}㎡'
+        : 'LGS　$method　${_fmtArea(lgs)}㎡';
+    final boards = widget.boardAreaParts.where((e) => e.m2 > 0).toList();
+
     return Wrap(
       spacing: 0,
       runSpacing: 0,
       children: [
-        cell('LGS', '${_fmtArea(lgs)}㎡'),
-        cell(
-          'ボード',
-          '${_fmtArea(board)}㎡'
-          '${(board != null && lgs != null && lgs > 0 && board > lgs + 0.01) ? '（層数×面）' : ''}',
-        ),
-        if (rock != null && rock > 0) cell('ロックフェルト', '${_fmtArea(rock)}m'),
-        if (gw != null && gw > 0) cell('グラスウール', '${_fmtArea(gw)}㎡'),
+        if (lgs != null && lgs > 0) cell(lgsText),
+        if (boards.isNotEmpty)
+          for (final b in boards) cell('${b.name}　${_fmtArea(b.m2)}㎡')
+        else if (board != null && board > 0)
+          cell(
+            '${ms.board}　${_fmtArea(board)}㎡'
+            '${(lgs != null && lgs > 0 && board > lgs + 0.01) ? ms.layersTimesFaces : ''}',
+          ),
+        if (rock != null && rock > 0) cell('${ms.rockFelt}　${_fmtArea(rock)}m'),
+        if (gw != null && gw > 0) cell('${ms.glassWool}　${_fmtArea(gw)}㎡'),
       ],
     );
   }
@@ -266,6 +340,16 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
     if (e.lw.isNotEmpty) return e.lw;
     if (e.lengthMm > 0) return e.lengthMm.toStringAsFixed(0);
     return '';
+  }
+
+  /// クロス試算表では仕様に「クロス専用」を出さない
+  String _displaySpec(EstimateLine e) {
+    var s = e.spec.trim();
+    if (_filter == EstimateSheetKind.cross ||
+        EstimateBuilder.isCrossLine(e)) {
+      s = s.replaceFirst(RegExp(r'^クロス専用[・･\s]*'), '');
+    }
+    return s;
   }
 
   /// ページ先頭、または直前行と線番号が違うときだけ表示
@@ -339,6 +423,12 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
         enabled: enabled,
         textAlign: align,
         style: style,
+        keyboardType: keyboard,
+        textInputAction: DoneKeyboard.action,
+        onSubmitted: DoneKeyboard.onSubmitted,
+        inputFormatters: keyboard != null
+            ? DoneKeyboard.decimalFormatters
+            : null,
         decoration: const InputDecoration(
           isDense: true,
           border: InputBorder.none,
@@ -355,9 +445,10 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
       textAlign: align,
       style: style,
       keyboardType: keyboard,
-      inputFormatters: keyboard ==
-              const TextInputType.numberWithOptions(decimal: true)
-          ? [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))]
+      textInputAction: DoneKeyboard.action,
+      onFieldSubmitted: DoneKeyboard.onSubmitted,
+      inputFormatters: keyboard != null
+          ? DoneKeyboard.decimalFormatters
           : null,
       decoration: const InputDecoration(
         isDense: true,
@@ -375,8 +466,21 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
 
   @override
   Widget build(BuildContext context) {
-    final dateFmt = DateFormat('yyyy年M月d日');
-    return Scaffold(
+    final ms = Ms.of(context);
+    final s = S.of(context);
+    final dateFmt = DateFormat(ms.datePattern(), switch (ms.lang) {
+      AppLang.ja => 'ja',
+      AppLang.en => 'en',
+      AppLang.zh => 'zh',
+      AppLang.vi => 'vi',
+    });
+    return SafeArea(
+      left: true,
+      right: true,
+      top: false,
+      bottom: false,
+      minimum: const EdgeInsets.fromLTRB(6, 0, 14, 0),
+      child: Scaffold(
       backgroundColor: const Color(0xFFF7F7F5),
       appBar: AppBar(
         title: Text(widget.appBarTitle),
@@ -385,7 +489,7 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
             TextButton(
               onPressed: () => _applyFilter(EstimateSheetKind.board),
               child: Text(
-                'ボードのみ表示',
+                ms.boardOnlyView,
                 style: TextStyle(
                   color: _filter == EstimateSheetKind.board
                       ? AppTheme.safetyYellow
@@ -399,7 +503,7 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
             TextButton(
               onPressed: () => _applyFilter(EstimateSheetKind.lgs),
               child: Text(
-                'LGSのみ表示',
+                ms.lgsOnlyView,
                 style: TextStyle(
                   color: _filter == EstimateSheetKind.lgs
                       ? AppTheme.safetyYellow
@@ -413,22 +517,23 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
             if (_filter != null)
               TextButton(
                 onPressed: () => _applyFilter(null),
-                child: const Text(
-                  'すべて',
-                  style: TextStyle(color: Colors.white70),
+                child: Text(
+                  ms.allItems,
+                  style: const TextStyle(color: Colors.white70),
                 ),
               ),
           ],
           TextButton(
             onPressed: widget.editable ? _save : () => Navigator.pop(context),
             child: Text(
-              widget.editable ? '保存' : '閉じる',
+              widget.editable ? ms.save : s.close,
               style: const TextStyle(color: Colors.white),
             ),
           ),
         ],
       ),
-      body: ListView.builder(
+      body: KeyboardDoneScope(
+        child: ListView.builder(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
         itemCount: _pageCount,
         itemBuilder: (context, page) {
@@ -447,6 +552,8 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
           );
         },
       ),
+      ),
+    ),
     );
   }
 
@@ -456,6 +563,7 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
     required int end,
     required DateFormat dateFmt,
   }) {
+    final ms = Ms.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -463,7 +571,7 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: Text(
-              '— ${pageIndex + 1} 枚目 —',
+              ms.pageN(pageIndex + 1),
               textAlign: TextAlign.center,
               style: const TextStyle(
                 fontSize: 12,
@@ -479,10 +587,12 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
               flex: 2,
               child: Text(
                 _filter == EstimateSheetKind.board
-                    ? '表示: ボードのみ（${_lines.length}件）'
+                    ? ms.viewBoard(_lines.length)
                     : _filter == EstimateSheetKind.lgs
-                        ? '表示: LGSのみ（${_lines.length}件）'
-                        : '表示: すべて（${_lines.length}件）',
+                        ? ms.viewLgs(_lines.length)
+                        : _filter == EstimateSheetKind.cross
+                            ? ms.viewCross(_lines.length)
+                            : ms.viewAll(_lines.length),
                 style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w800,
@@ -490,9 +600,13 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
                 ),
               ),
             ),
-            const Text(
-              '試算表',
-              style: TextStyle(
+            Text(
+              _filter == EstimateSheetKind.cross
+                  ? ms.estimateCross
+                  : _filter == EstimateSheetKind.drop
+                      ? ms.estimateDrop
+                      : ms.estimate,
+              style: const TextStyle(
                 fontSize: 26,
                 fontWeight: FontWeight.w900,
                 letterSpacing: 6,
@@ -507,9 +621,9 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text(
-                      '日付',
-                      style: TextStyle(
+                    Text(
+                      ms.date,
+                      style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w800,
                       ),
@@ -535,27 +649,28 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
             border: Border.all(color: AppTheme.navy.withValues(alpha: 0.45)),
           ),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                flex: 2,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 10,
-                    horizontal: 12,
-                  ),
-                  color: Colors.white,
-                  child: Text(
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  vertical: 10,
+                  horizontal: 12,
+                ),
+                child: Text(
+                  EstimateBuilder.placeLabel(
+                    widget.projectName ?? '',
                     _areaKindLabel(widget.areaLabel),
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w800,
-                    ),
+                  ),
+                  softWrap: false,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
               ),
               Expanded(
-                flex: 5,
                 child: Container(
+                  width: double.infinity,
                   padding: const EdgeInsets.symmetric(
                     vertical: 8,
                     horizontal: 12,
@@ -583,14 +698,17 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
               Row(
                 children: [
                   _headerCell('No', width: 36),
-                  _headerCell('プロジェクト名', flex: 2),
-                  _headerCell('品名', flex: 3),
-                  _headerCell('サイズ', width: 56),
-                  _headerCell('仕様', flex: 3),
-                  _headerCell('単位', width: 44),
-                  _headerCell('数量', width: 52),
-                  _headerCell('ロス率％', width: 68),
-                  _headerCell('合計', flex: 2),
+                  _headerCell(ms.projectName, flex: 2),
+                  _headerCell(
+                    _filter == EstimateSheetKind.cross ? ms.nameOrCode : ms.itemName,
+                    flex: 3,
+                  ),
+                  _headerCell(ms.size, width: 56),
+                  _headerCell(ms.spec, flex: 3),
+                  _headerCell(ms.unit, width: 44),
+                  _headerCell(ms.qty, width: 52),
+                  _headerCell(ms.wastePct, width: 68),
+                  _headerCell(ms.total, flex: 2),
                 ],
               ),
               if (_lines.isEmpty)
@@ -600,7 +718,7 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
                   decoration: BoxDecoration(
                     border: Border.all(color: _gridLine, width: 0.8),
                   ),
-                  child: const Text('明細がありません', textAlign: TextAlign.center),
+                  child: Text(ms.noLines, textAlign: TextAlign.center),
                 )
               else
                 for (var i = start; i < end; i++)
@@ -710,7 +828,7 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
             fill: fill,
             child: _input(
               fieldKey: ValueKey('$rowKey-spec'),
-              initial: e.spec,
+              initial: _displaySpec(e),
               onChanged: (v) => e.spec = v,
             ),
           ),
@@ -731,7 +849,7 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
               fieldKey: ValueKey('$rowKey-qty'),
               initial: _fmtNum(e.qty),
               align: TextAlign.right,
-              keyboard: const TextInputType.numberWithOptions(decimal: true),
+              keyboard: DoneKeyboard.decimal,
               onChanged: (v) {
                 final n = double.tryParse(v);
                 if (n != null) {
@@ -754,7 +872,7 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
               fieldKey: ValueKey('$rowKey-waste'),
               initial: _fmtNum(e.wastePercent),
               align: TextAlign.right,
-              keyboard: const TextInputType.numberWithOptions(decimal: true),
+              keyboard: DoneKeyboard.decimal,
               onChanged: (v) {
                 final n = double.tryParse(v);
                 if (n != null) setState(() => e.wastePercent = n);

@@ -1,13 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../l10n/locale_controller.dart';
 import '../../providers/app_state.dart';
 import '../../theme/app_theme.dart';
 
 class ActivateScreen extends StatefulWidget {
-  const ActivateScreen({super.key, this.initialEmail});
+  const ActivateScreen({
+    super.key,
+    this.initialEmail,
+    this.isPasswordReset = false,
+  });
 
   final String? initialEmail;
+  final bool isPasswordReset;
 
   @override
   State<ActivateScreen> createState() => _ActivateScreenState();
@@ -36,7 +42,7 @@ class _ActivateScreenState extends State<ActivateScreen> {
   Future<void> _activate() async {
     if (_password.text != _confirm.text) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('パスワードが一致しません')),
+        SnackBar(content: Text(S.of(context).passwordMismatch)),
       );
       return;
     }
@@ -62,8 +68,11 @@ class _ActivateScreenState extends State<ActivateScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('アカウント活性化')),
+      appBar: AppBar(
+        title: Text(widget.isPasswordReset ? s.resetPasswordTitle : s.activateTitle),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
@@ -73,35 +82,35 @@ class _ActivateScreenState extends State<ActivateScreen> {
               color: AppTheme.safetyYellow.withValues(alpha: 0.25),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Text(
-              'メール内のリンク相当です。パスワードを設定するとアカウントが有効になります。',
-            ),
+            child: Text(widget.isPasswordReset ? s.resetHint : s.activateHint),
           ),
           const SizedBox(height: 16),
           TextField(
             controller: _email,
+            readOnly: widget.isPasswordReset &&
+                (widget.initialEmail?.isNotEmpty ?? false),
             keyboardType: TextInputType.emailAddress,
-            decoration: const InputDecoration(
-              labelText: 'メールアドレス',
-              prefixIcon: Icon(Icons.email_outlined),
+            decoration: InputDecoration(
+              labelText: s.email,
+              prefixIcon: const Icon(Icons.email_outlined),
             ),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: _password,
             obscureText: true,
-            decoration: const InputDecoration(
-              labelText: 'パスワード（6文字以上）',
-              prefixIcon: Icon(Icons.lock_outline),
+            decoration: InputDecoration(
+              labelText: s.passwordMin6,
+              prefixIcon: const Icon(Icons.lock_outline),
             ),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: _confirm,
             obscureText: true,
-            decoration: const InputDecoration(
-              labelText: 'パスワード確認',
-              prefixIcon: Icon(Icons.lock_outline),
+            decoration: InputDecoration(
+              labelText: s.passwordConfirm,
+              prefixIcon: const Icon(Icons.lock_outline),
             ),
           ),
           const SizedBox(height: 20),
@@ -116,7 +125,9 @@ class _ActivateScreenState extends State<ActivateScreen> {
                       color: Colors.white,
                     ),
                   )
-                : const Text('パスワードを設定して有効化'),
+                : Text(widget.isPasswordReset
+                    ? s.resetPasswordAction
+                    : s.setPasswordActivate),
           ),
         ],
       ),

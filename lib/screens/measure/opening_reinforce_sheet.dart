@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 
+import '../../l10n/locale_controller.dart';
+import '../../l10n/s_measure.dart';
 import '../../models/models.dart';
 import '../../services/opening_reinforce.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/keyboard_done.dart';
 
 class OpeningReinforceResult {
   OpeningReinforceResult({
@@ -11,40 +14,64 @@ class OpeningReinforceResult {
     required this.heightMm,
     required this.widthMm,
     required this.magusaSegments,
+    this.delete = false,
   });
+
+  OpeningReinforceResult.deleted()
+      : pattern = OpeningReinforcePattern.redH,
+        material = OpeningMaterialKind.reinforce,
+        heightMm = 0,
+        widthMm = 0,
+        magusaSegments = 1,
+        delete = true;
 
   final OpeningReinforcePattern pattern;
   final OpeningMaterialKind material;
   final double heightMm;
   final double widthMm;
   final int magusaSegments;
+  final bool delete;
 }
 
-/// 2点確定後：7種グラフィック＋材料・寸法
+/// 開口補強の新規／再設定
 class OpeningReinforceSheet extends StatefulWidget {
   const OpeningReinforceSheet({
     super.key,
     required this.defaultWidthMm,
     this.defaultHeightMm = 2100,
+    this.initialPattern,
+    this.initialMaterial,
+    this.initialMagusaSegments,
+    this.allowDelete = false,
+    this.stockLengthMm = 3000,
   });
 
   final double defaultWidthMm;
   final double defaultHeightMm;
+  final OpeningReinforcePattern? initialPattern;
+  final OpeningMaterialKind? initialMaterial;
+  final int? initialMagusaSegments;
+  final bool allowDelete;
+  /// 補強材定尺（本数目安表示用）
+  final double stockLengthMm;
 
   @override
   State<OpeningReinforceSheet> createState() => _OpeningReinforceSheetState();
 }
 
 class _OpeningReinforceSheetState extends State<OpeningReinforceSheet> {
-  OpeningReinforcePattern _pattern = OpeningReinforcePattern.redOrange;
-  OpeningMaterialKind _material = OpeningMaterialKind.reinforce;
-  int _magusa = 1;
+  late OpeningReinforcePattern _pattern;
+  late OpeningMaterialKind _material;
+  late int _magusa;
   late final TextEditingController _height;
   late final TextEditingController _width;
 
   @override
   void initState() {
     super.initState();
+    _pattern = widget.initialPattern ?? OpeningReinforcePattern.redHOrange;
+    _material = widget.initialMaterial ?? OpeningMaterialKind.reinforce;
+    _magusa = (widget.initialMagusaSegments ?? 1).clamp(1, 4);
     _height = TextEditingController(
       text: widget.defaultHeightMm.toStringAsFixed(0),
     );
@@ -59,11 +86,35 @@ class _OpeningReinforceSheetState extends State<OpeningReinforceSheet> {
     super.dispose();
   }
 
+  Future<void> _confirmDelete() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(Ms.of(context).openingDeleteTitle),
+        content: Text(Ms.of(context).openingDeleteBody),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(S.of(ctx).cancel),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.danger),
+            child: Text(S.of(ctx).delete),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && mounted) {
+      Navigator.pop(context, OpeningReinforceResult.deleted());
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final bottom = MediaQuery.viewInsetsOf(context).bottom;
-    return Padding(
-      padding: EdgeInsets.only(bottom: bottom),
+    final stock =
+        widget.stockLengthMm > 0 ? widget.stockLengthMm : 3000.0;
+    return KeyboardDoneScope(
       child: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
@@ -81,9 +132,27 @@ class _OpeningReinforceSheetState extends State<OpeningReinforceSheet> {
                   ),
                 ),
               ),
-              const Text(
-                '開口補強 — 形状選択',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.allowDelete
+                          ? Ms.of(context).openingReset
+                          : Ms.of(context).openingPickShape,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: Text(
+                      S.of(context).cancel,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 4),
               Text(
@@ -125,9 +194,9 @@ class _OpeningReinforceSheetState extends State<OpeningReinforceSheet> {
                 ),
               ),
               const SizedBox(height: 12),
-              const Text(
-                '材料内容',
-                style: TextStyle(fontWeight: FontWeight.w800),
+              Text(
+                Ms.of(context).materialContent,
+                style: const TextStyle(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 6),
               SizedBox(
@@ -154,10 +223,13 @@ class _OpeningReinforceSheetState extends State<OpeningReinforceSheet> {
                   Expanded(
                     child: TextField(
                       controller: _height,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                        labelText: '開口高さ (mm)',
-                        border: OutlineInputBorder(),
+                      keyboardType: DoneKeyboard.integer,
+                      inputFormatters: DoneKeyboard.integerFormatters,
+                      textInputAction: DoneKeyboard.action,
+                      onSubmitted: DoneKeyboard.onSubmitted,
+                      decoration: InputDecoration(
+                        labelText: Ms.of(context).openingH,
+                        border: const OutlineInputBorder(),
                         isDense: true,
                       ),
                     ),
@@ -166,10 +238,13 @@ class _OpeningReinforceSheetState extends State<OpeningReinforceSheet> {
                   Expanded(
                     child: TextField(
                       controller: _width,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                        labelText: '開口幅 (mm)',
-                        border: OutlineInputBorder(),
+                      keyboardType: DoneKeyboard.integer,
+                      inputFormatters: DoneKeyboard.integerFormatters,
+                      textInputAction: DoneKeyboard.action,
+                      onSubmitted: DoneKeyboard.onSubmitted,
+                      decoration: InputDecoration(
+                        labelText: Ms.of(context).openingW,
+                        border: const OutlineInputBorder(),
                         isDense: true,
                       ),
                     ),
@@ -177,9 +252,9 @@ class _OpeningReinforceSheetState extends State<OpeningReinforceSheet> {
                 ],
               ),
               const SizedBox(height: 12),
-              const Text(
-                'まぐさ段数',
-                style: TextStyle(fontWeight: FontWeight.w800),
+              Text(
+                Ms.of(context).lintelTiers,
+                style: const TextStyle(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 6),
               SizedBox(
@@ -191,7 +266,7 @@ class _OpeningReinforceSheetState extends State<OpeningReinforceSheet> {
                       Padding(
                         padding: const EdgeInsets.only(right: 8),
                         child: ChoiceChip(
-                          label: Text('$s段'),
+                          label: Text(Ms.of(context).nDan(s)),
                           selected: _magusa == s,
                           onSelected: (_) => setState(() => _magusa = s),
                           selectedColor: AppTheme.safetyYellow,
@@ -202,10 +277,28 @@ class _OpeningReinforceSheetState extends State<OpeningReinforceSheet> {
               ),
               if (_material == OpeningMaterialKind.reinforce) ...[
                 const SizedBox(height: 10),
-                Text(
-                  '補強材：縦線${_pattern.verticalLines}本＋横線'
-                  '${_pattern.horizontalLines(_magusa)}本（定尺割付）',
-                  style: const TextStyle(fontSize: 12, color: AppTheme.steel),
+                Builder(
+                  builder: (_) {
+                    final w = double.tryParse(_width.text.trim()) ?? 900;
+                    final bars = OpeningReinforceCalc.reinforceBars(
+                      pattern: _pattern,
+                      magusaSegments: _magusa,
+                      openingWidthMm: w,
+                      stockLengthMm: stock,
+                    );
+                    final v = _pattern.verticalLines;
+                    final hm = _pattern.horizontalLines(_magusa);
+                    final hBars = cutStockBars(
+                      memberCount: hm,
+                      pieceMm: w,
+                      stockMm: stock,
+                    );
+                    return Text(
+                      '補強材：縦${v}＋横定尺割付${hBars}＝${bars}本'
+                      '（まぐさ余りは同一壁の次開口へ流用）',
+                      style: const TextStyle(fontSize: 12, color: AppTheme.steel),
+                    );
+                  },
                 ),
               ],
               const SizedBox(height: 16),
@@ -224,8 +317,25 @@ class _OpeningReinforceSheetState extends State<OpeningReinforceSheet> {
                     ),
                   );
                 },
-                child: const Text('確定'),
+                child: Text(widget.allowDelete
+                    ? Ms.of(context).update
+                    : Ms.of(context).confirm),
               ),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(S.of(context).cancel),
+              ),
+              if (widget.allowDelete) ...[
+                const SizedBox(height: 8),
+                OutlinedButton(
+                  onPressed: _confirmDelete,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.danger,
+                  ),
+                  child: Text(Ms.of(context).deleteThisOpening),
+                ),
+              ],
             ],
           ),
         ),

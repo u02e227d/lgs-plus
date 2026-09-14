@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 
+import 'l10n/app_lang.dart';
+import 'l10n/locale_controller.dart';
 import 'providers/app_state.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/home/project_list_screen.dart';
@@ -13,11 +16,28 @@ class LgsPlusApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
       create: (_) => AppState()..bootstrap(),
-      child: MaterialApp(
-        title: 'LGS+積算',
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.light(),
-        home: const _RootGate(),
+      child: ListenableBuilder(
+        listenable: LocaleController.instance,
+        builder: (context, _) {
+          final loc = LocaleController.instance;
+          return MaterialApp(
+            title: 'LGS+積算',
+            debugShowCheckedModeBanner: false,
+            theme: AppTheme.light(),
+            locale: loc.locale,
+            supportedLocales: AppLang.values.map((e) => e.locale).toList(),
+            localizationsDelegates: const [
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            builder: (context, child) => LocaleScope(
+              controller: loc,
+              child: child ?? const SizedBox.shrink(),
+            ),
+            home: const _RootGate(),
+          );
+        },
       ),
     );
   }
@@ -29,6 +49,7 @@ class _RootGate extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
+    final s = S.of(context);
     if (state.booting) {
       return Scaffold(
         backgroundColor: AppTheme.navy,
@@ -53,9 +74,9 @@ class _RootGate extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 16),
-              const Text(
-                '現場積算・注文をオフラインで',
-                style: TextStyle(color: Colors.white70, fontSize: 14),
+              Text(
+                s.appTagline,
+                style: const TextStyle(color: Colors.white70, fontSize: 14),
               ),
               const SizedBox(height: 28),
               const CircularProgressIndicator(color: AppTheme.safetyYellow),

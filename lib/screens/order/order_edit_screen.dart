@@ -6,10 +6,12 @@ import 'package:printing/printing.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../l10n/locale_controller.dart';
 import '../../models/models.dart';
 import '../../providers/app_state.dart';
 import '../../services/pdf_order_exporter.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/keyboard_done.dart';
 
 class OrderEditScreen extends StatefulWidget {
   const OrderEditScreen({
@@ -54,21 +56,24 @@ class _OrderEditScreenState extends State<OrderEditScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('明細編集'),
+        title: Text(S.of(ctx).editLineTitle),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: '品名')),
+            TextField(controller: nameCtrl, decoration: InputDecoration(labelText: S.of(ctx).itemName)),
             TextField(
               controller: qtyCtrl,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(labelText: '数量（${line.unit}）'),
+              keyboardType: DoneKeyboard.integer,
+              inputFormatters: DoneKeyboard.integerFormatters,
+              textInputAction: DoneKeyboard.action,
+              onSubmitted: DoneKeyboard.onSubmitted,
+              decoration: InputDecoration(labelText: S.of(ctx).qtyWithUnit(line.unit)),
             ),
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')),
-          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('保存')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(S.of(ctx).cancel)),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: Text(S.of(ctx).save)),
         ],
       ),
     );
@@ -100,18 +105,25 @@ class _OrderEditScreenState extends State<OrderEditScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('追加項目'),
+        title: Text(S.of(ctx).addItemTitle),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: '品名（例：接着剤）')),
-            TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: '数量')),
-            TextField(controller: unitCtrl, decoration: const InputDecoration(labelText: '単位')),
+            TextField(controller: nameCtrl, decoration: InputDecoration(labelText: S.of(ctx).addItemNameHint)),
+            TextField(
+              controller: qtyCtrl,
+              keyboardType: DoneKeyboard.integer,
+              inputFormatters: DoneKeyboard.integerFormatters,
+              textInputAction: DoneKeyboard.action,
+              onSubmitted: DoneKeyboard.onSubmitted,
+              decoration: InputDecoration(labelText: S.of(ctx).qty),
+            ),
+            TextField(controller: unitCtrl, decoration: InputDecoration(labelText: S.of(ctx).unit)),
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('キャンセル')),
-          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('追加')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(S.of(ctx).cancel)),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: Text(S.of(ctx).add)),
         ],
       ),
     );
@@ -158,20 +170,20 @@ class _OrderEditScreenState extends State<OrderEditScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const ListTile(title: Text('注文書をエクスポート')),
+              ListTile(title: Text(S.of(ctx).exportOrder)),
               ListTile(
                 leading: const Icon(Icons.share),
-                title: const Text('共有（LINE / Email 等）'),
+                title: Text(S.of(ctx).shareLineEmail),
                 onTap: () => Navigator.pop(ctx, 'share'),
               ),
               ListTile(
                 leading: const Icon(Icons.print),
-                title: const Text('印刷 / システム共有'),
+                title: Text(S.of(ctx).printSystemShare),
                 onTap: () => Navigator.pop(ctx, 'print'),
               ),
               ListTile(
                 leading: const Icon(Icons.preview),
-                title: const Text('プレビュー'),
+                title: Text(S.of(ctx).preview),
                 onTap: () => Navigator.pop(ctx, 'preview'),
               ),
             ],
@@ -197,7 +209,7 @@ class _OrderEditScreenState extends State<OrderEditScreen> {
         await Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) => Scaffold(
-              appBar: AppBar(title: const Text('注文書プレビュー')),
+              appBar: AppBar(title: Text(S.of(context).orderPreview)),
               body: PdfPreview(build: (_) async => bytes),
             ),
           ),
@@ -213,18 +225,18 @@ class _OrderEditScreenState extends State<OrderEditScreen> {
     final order = _order;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('注文明細'),
+        title: Text(S.of(context).orderLinesTitle),
         actions: [
           TextButton(
             onPressed: _busy ? null : _confirmExport,
-            child: const Text('注文確認', style: TextStyle(color: Colors.white)),
+            child: Text(S.of(context).orderConfirm, style: const TextStyle(color: Colors.white)),
           ),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _addManual,
         icon: const Icon(Icons.add),
-        label: const Text('追加項目'),
+        label: Text(S.of(context).addItemTitle),
       ),
       body: order == null
           ? const Center(child: CircularProgressIndicator())

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../l10n/locale_controller.dart';
 import '../../providers/app_state.dart';
 
 class CreateProjectScreen extends StatefulWidget {
@@ -46,8 +47,9 @@ class _CreateProjectScreenState extends State<CreateProjectScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('新規現場')),
+      appBar: AppBar(title: Text(s.newSite)),
       body: Form(
         key: _form,
         child: ListView(
@@ -55,43 +57,46 @@ class _CreateProjectScreenState extends State<CreateProjectScreen> {
           children: [
             TextFormField(
               controller: _name,
-              decoration: const InputDecoration(
-                labelText: '現場名称',
-                prefixIcon: Icon(Icons.flag_outlined),
+              decoration: InputDecoration(
+                labelText: s.siteName,
+                prefixIcon: const Icon(Icons.flag_outlined),
               ),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? '現場名称を入力' : null,
+              validator: (v) => (v == null || v.trim().isEmpty)
+                  ? s.enterShort(s.siteName)
+                  : null,
             ),
             const SizedBox(height: 12),
             TextFormField(
               controller: _address,
-              decoration: const InputDecoration(
-                labelText: '住所',
-                prefixIcon: Icon(Icons.location_on_outlined),
+              decoration: InputDecoration(
+                labelText: s.address,
+                prefixIcon: const Icon(Icons.location_on_outlined),
               ),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? '住所を入力' : null,
+              validator: (v) => (v == null || v.trim().isEmpty)
+                  ? s.enterShort(s.address)
+                  : null,
             ),
             const SizedBox(height: 12),
             TextFormField(
               controller: _contact,
-              decoration: const InputDecoration(
-                labelText: '連絡先担当者',
-                prefixIcon: Icon(Icons.person_outline),
+              decoration: InputDecoration(
+                labelText: s.contactPerson,
+                prefixIcon: const Icon(Icons.person_outline),
               ),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? '連絡先を入力' : null,
+              validator: (v) => (v == null || v.trim().isEmpty)
+                  ? s.enterShort(s.contactPerson)
+                  : null,
             ),
             const SizedBox(height: 12),
             TextFormField(
               controller: _phone,
               keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(
-                labelText: '電話番号',
-                prefixIcon: Icon(Icons.phone_outlined),
+              decoration: InputDecoration(
+                labelText: s.phone,
+                prefixIcon: const Icon(Icons.phone_outlined),
               ),
               validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? '電話番号を入力' : null,
+                  (v == null || v.trim().isEmpty) ? s.enterShort(s.phone) : null,
             ),
             const SizedBox(height: 24),
             ElevatedButton(
@@ -105,7 +110,7 @@ class _CreateProjectScreenState extends State<CreateProjectScreen> {
                         color: Colors.white,
                       ),
                     )
-                  : const Text('作成する'),
+                  : Text(s.create),
             ),
           ],
         ),

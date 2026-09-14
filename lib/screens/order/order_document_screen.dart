@@ -1,12 +1,20 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../l10n/locale_controller.dart';
+import '../../l10n/s_measure.dart';
 import '../../models/models.dart';
 import '../../providers/app_state.dart';
+import '../../services/pdf_order_exporter.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/keyboard_done.dart';
 
 /// Numbers「注文書」レイアウト（プロジェクト名・ロス率％なし）
 class OrderDocumentScreen extends StatefulWidget {
@@ -45,6 +53,7 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
   late DateTime _issueDate;
   late DateTime _deliveryDate;
   late final TextEditingController _customer;
+  late final TextEditingController _siteName;
   late final TextEditingController _siteAddress;
   late final TextEditingController _receiver;
   late final TextEditingController _sitePhone;
@@ -53,6 +62,14 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
   late final TextEditingController _companyPhone;
   late final TextEditingController _orderNo;
   late List<EstimateLine> _lines;
+  final Map<String, TextEditingController> _noteCtrls = {};
+
+  TextEditingController _noteCtrlFor(EstimateLine e) {
+    return _noteCtrls.putIfAbsent(
+      e.id,
+      () => TextEditingController(text: e.note),
+    );
+  }
 
   @override
   void initState() {
@@ -66,6 +83,7 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
     final d = widget.deliveryDate ?? now.add(const Duration(days: 3));
     _deliveryDate = DateTime(d.year, d.month, d.day);
     _customer = TextEditingController();
+    _siteName = TextEditingController(text: widget.projectName ?? '');
     _siteAddress = TextEditingController(text: widget.siteAddress ?? '');
     _receiver = TextEditingController(text: widget.siteContact ?? '');
     _sitePhone = TextEditingController(text: widget.sitePhone ?? '');
@@ -85,7 +103,7 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
             unit: e.unit,
             subtotal: e.subtotal,
             wastePercent: e.wastePercent,
-            note: e.note,
+            note: '',
           ),
         )
         .toList();
@@ -124,6 +142,7 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
       DeviceOrientation.landscapeRight,
     ]);
     _customer.dispose();
+    _siteName.dispose();
     _siteAddress.dispose();
     _receiver.dispose();
     _sitePhone.dispose();
@@ -131,6 +150,9 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
     _companyAddress.dispose();
     _companyPhone.dispose();
     _orderNo.dispose();
+    for (final c in _noteCtrls.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -168,17 +190,80 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
     return ((_lines.length - 1) ~/ _rowsPerPage) + 1;
   }
 
+  Future<void> _exportPdf() async {
+    final dateFmt = DateFormat('yyyy年M月d日');
+    final bytes = await PdfOrderExporter.buildOrderDocument(
+      title: widget.appBarTitle,
+      customer: _customer.text.trim(),
+      siteName: _siteName.text.trim(),
+      siteAddress: _siteAddress.text.trim(),
+      receiver: _receiver.text.trim(),
+      sitePhone: _sitePhone.text.trim(),
+      companyName: _companyName.text.trim(),
+      companyAddress: _companyAddress.text.trim(),
+      companyPhone: _companyPhone.text.trim(),
+      orderNo: _orderNo.text.trim(),
+      issueDateLabel: dateFmt.format(_issueDate),
+      deliveryDateLabel: dateFmt.format(_deliveryDate),
+      lines: [
+        for (final e in _lines)
+          EstimateLine(
+            id: e.id,
+            name: e.name,
+            spec: e.spec,
+            lw: _sizeOf(e),
+            lengthMm: e.lengthMm,
+            qty: e.qty,
+            unit: e.unit,
+            subtotal: e.subtotal,
+            wastePercent: e.wastePercent,
+            note: _noteCtrlFor(e).text.trim(),
+          ),
+      ],
+    );
+    if (!mounted) return;
+    final dir = await getTemporaryDirectory();
+    final stamp = DateFormat('yyyyMMdd_HHmm').format(DateTime.now());
+    final name = (widget.projectName ?? '注文書').replaceAll('/', '_');
+    final file = File('${dir.path}/注文書_${name}_$stamp.pdf');
+    await file.writeAsBytes(bytes);
+    if (!mounted) return;
+    final box = context.findRenderObject() as RenderBox?;
+    final origin = box == null
+        ? const Rect.fromLTWH(80, 40, 1, 1)
+        : Rect.fromLTWH(box.size.width - 80, 12, 64, 40);
+    await SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(file.path, mimeType: 'application/pdf')],
+        subject: '${widget.appBarTitle} — $name',
+        text: '$name の注文書です（LGS+）',
+        sharePositionOrigin: origin,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final dateFmt = DateFormat('yyyy年M月d日');
-    return Scaffold(
+    return SafeArea(
+      left: true,
+      right: true,
+      top: false,
+      bottom: false,
+      minimum: const EdgeInsets.fromLTRB(6, 0, 14, 0),
+      child: Scaffold(
       backgroundColor: const Color(0xFFF7F7F5),
       appBar: AppBar(
         title: Text(widget.appBarTitle),
         actions: [
+          IconButton(
+            tooltip: S.of(context).export,
+            onPressed: _exportPdf,
+            icon: const Icon(Icons.ios_share, color: Colors.white, size: 24),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('閉じる', style: TextStyle(color: Colors.white)),
+            child: Text(S.of(context).close, style: const TextStyle(color: Colors.white)),
           ),
         ],
       ),
@@ -201,6 +286,7 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
           );
         },
       ),
+    ),
     );
   }
 
@@ -289,20 +375,15 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
                 children: [
                   Row(
                     children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _customer,
-                          decoration: const InputDecoration(
-                            isDense: true,
-                            hintText: '取引先名（履歴あり）',
-                            border: UnderlineInputBorder(),
-                          ),
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w800,
-                          ),
-                          onChanged: (_) => _persistCustomer(),
+                      _fitUnderlineField(
+                        _customer,
+                        hint: '取引先名',
+                        minWidth: 72,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
                         ),
+                        onChanged: (_) => _persistCustomer(),
                       ),
                       const Text(
                         '　様',
@@ -319,6 +400,7 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 10),
+                  _labeledField('現場名', _siteName),
                   _labeledField('現場住所', _siteAddress),
                   _labeledField('受取者', _receiver),
                   _labeledField('電話番号', _sitePhone),
@@ -330,22 +412,75 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
                 ],
               ),
             ),
-            const SizedBox(width: 24),
+            const SizedBox(width: 16),
             Expanded(
               flex: 5,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _dateRow('発行日', dateFmt.format(_issueDate), _pickIssue),
-                  _labeledField('会社名', _companyName),
-                  _labeledField('住所', _companyAddress, prefix: '〒 '),
-                  _labeledField('電話番号', _companyPhone),
-                ],
+              child: Align(
+                alignment: Alignment.topRight,
+                child: SizedBox(
+                  width: 268,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _rightMetaDate(
+                        '発行日',
+                        dateFmt.format(_issueDate),
+                        _pickIssue,
+                      ),
+                      _rightMetaField('会社名', _companyName),
+                      _rightMetaField('住所', _companyAddress, prefix: '〒 '),
+                      _rightMetaField('電話番号', _companyPhone),
+                    ],
+                  ),
+                ),
               ),
             ),
           ],
         ),
       ],
+    );
+  }
+
+  Widget _fitUnderlineField(
+    TextEditingController ctrl, {
+    String hint = '',
+    double minWidth = 48,
+    TextStyle? style,
+    ValueChanged<String>? onChanged,
+  }) {
+    return AnimatedBuilder(
+      animation: ctrl,
+      builder: (_, __) {
+        final hasText = ctrl.text.trim().isNotEmpty;
+        return IntrinsicWidth(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: minWidth),
+            child: TextField(
+              controller: ctrl,
+              onChanged: onChanged,
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: hint,
+                hintStyle: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: AppTheme.steel,
+                ),
+                border: hasText
+                    ? const UnderlineInputBorder()
+                    : InputBorder.none,
+                enabledBorder: hasText
+                    ? const UnderlineInputBorder()
+                    : InputBorder.none,
+                focusedBorder: const UnderlineInputBorder(),
+                contentPadding: const EdgeInsets.symmetric(vertical: 4),
+              ),
+              style: style ??
+                  const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -368,18 +503,69 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
           ),
           if (prefix.isNotEmpty)
             Text(prefix, style: const TextStyle(fontSize: 12)),
-          Expanded(
-            child: TextField(
-              controller: ctrl,
-              decoration: const InputDecoration(
-                isDense: true,
-                border: UnderlineInputBorder(),
-                contentPadding: EdgeInsets.symmetric(vertical: 4),
-              ),
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          Flexible(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: _fitUnderlineField(ctrl, minWidth: 56),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  static const _rightLabelWidth = 56.0;
+
+  Widget _rightMetaLabel(String label) {
+    return SizedBox(
+      width: _rightLabelWidth,
+      child: Text(
+        label,
+        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
+      ),
+    );
+  }
+
+  Widget _rightMetaField(
+    String label,
+    TextEditingController ctrl, {
+    String prefix = '',
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          _rightMetaLabel(label),
+          if (prefix.isNotEmpty)
+            Text(prefix, style: const TextStyle(fontSize: 12)),
+          Expanded(
+            child: _fitUnderlineField(ctrl, minWidth: 56),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _rightMetaDate(String label, String value, VoidCallback onTap) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: InkWell(
+        onTap: onTap,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            _rightMetaLabel(label),
+            Text(
+              value,
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                decoration: TextDecoration.underline,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -427,7 +613,6 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
               _h('仕様', flex: 3),
               _h('単位', width: 44),
               _h('数量', width: 56),
-              _h('合計', width: 56),
               _h('備考', flex: 2),
             ],
           ),
@@ -435,7 +620,7 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(24),
-              child: const Text('明細がありません', textAlign: TextAlign.center),
+              child: Text(Ms.of(context).noLines, textAlign: TextAlign.center),
             )
           else
             for (var i = start; i < end; i++) _row(i),
@@ -553,24 +738,24 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
             ),
           ),
           _cell(
-            width: 56,
-            fill: fill,
-            child: Text(
-              qtyText,
-              textAlign: TextAlign.right,
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
-            ),
-          ),
-          _cell(
             flex: 2,
             fill: fill,
             child: Align(
               alignment: Alignment.centerLeft,
-              child: Text(
-                e.note,
+              child: TextField(
+                controller: _noteCtrlFor(e),
+                style: const TextStyle(fontSize: 11),
                 maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11, color: AppTheme.steel),
+                textInputAction: DoneKeyboard.action,
+                onSubmitted: DoneKeyboard.onSubmitted,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  border: InputBorder.none,
+                  hintText: '入力',
+                  hintStyle: TextStyle(fontSize: 11, color: AppTheme.steel),
+                  contentPadding: EdgeInsets.zero,
+                ),
+                onChanged: (v) => e.note = v.trim(),
               ),
             ),
           ),
@@ -590,7 +775,6 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
           _cell(width: 64, fill: fill, child: const SizedBox(height: 22)),
           _cell(flex: 3, fill: fill, child: const SizedBox(height: 22)),
           _cell(width: 44, fill: fill, child: const SizedBox(height: 22)),
-          _cell(width: 56, fill: fill, child: const SizedBox(height: 22)),
           _cell(width: 56, fill: fill, child: const SizedBox(height: 22)),
           _cell(flex: 2, fill: fill, child: const SizedBox(height: 22)),
         ],

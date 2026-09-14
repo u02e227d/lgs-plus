@@ -5,27 +5,38 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../l10n/locale_controller.dart';
+import '../../l10n/s_measure.dart';
 import '../../models/models.dart';
 import '../../providers/app_state.dart';
+import '../account/account_screen.dart';
 import '../../services/calc_engine.dart';
 import '../../services/edge_snap_engine.dart';
 import '../../services/estimate_builder.dart';
+import '../../services/feature_access.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/drop_draw_guide.dart';
 import '../../widgets/measure_mouse.dart';
 import '../../widgets/measure_painters.dart';
 import '../../widgets/wall_triad_editor.dart';
 import 'ceiling_params_sheet.dart';
+import 'ceiling_material_sheet.dart';
+import 'drop_settings_sheet.dart';
 import 'estimate_table_screen.dart';
 import 'opening_reinforce_sheet.dart';
+import 'cross_dedicated_sheet.dart';
+import 'iron_plate_measure_sheet.dart';
 import 'wall_material_sheet.dart';
 import 'wall_params_sheet.dart';
 import '../../services/opening_reinforce.dart';
+import '../../services/drop_calc.dart';
 
-enum CanvasTool { pan, wallPen, ceilingPen, openingReinforce }
+enum CanvasTool { pan, wallPen, ceilingPen, dropPen, openingReinforce }
 
 /// 壁マウスの画線モード
-enum WallDrawMode { single, multi }
+enum WallDrawMode { single, multi, ironPlate }
 
 /// 測定キャンバス：底図 / 壁線・天井 / マウス
 class MeasureCanvasScreen extends StatefulWidget {
@@ -64,16 +75,36 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
 
   final List<Offset> _ceilingDraft = [];
   final List<Offset> _openingDraft = [];
+  final List<Offset> _dropDraft = [];
+  final List<DropTurnWidth> _dropDraftTurnWidths = [];
+  bool _dropSecWidthMode = false;
+  String? _dropSecWidthDropId; // null＝ドラフト
+  Offset? _dropSecWidthOrigin;
+  int _dropSecWidthTurnIndex = 2;
   bool _openingSetupDone = false;
+  bool _chromeCollapsed = false;
 
   String? _selectedWallId;
+  String? _selectedCeilingId;
+  String? _selectedDropId;
   String? _continueWallId;
+  /// 次に描く天井の番号（統合時は既存番号を継続）
+  int _ceilingGroupNumber = 1;
+  bool _ceilingUnifyWithPrevious = false;
+  int _dropGroupNumber = 1;
+  bool _dropUnifyWithPrevious = false;
   final List<WallBadgeHit> _badgeHits = [];
+  final List<CeilingBadgeHit> _ceilingBadgeHits = [];
+  final List<DropBadgeHit> _dropBadgeHits = [];
+  final List<DropWidthPlusHit> _dropWidthPlusHits = [];
+  final List<OpeningMarkerHit> _openingHits = [];
   int _drawColorArgb = WallHighlightColors.defaultArgb;
   double _strokeWidth = 8;
   DateTime? _pointerDownAt;
   Offset? _pointerDownPos;
   bool _longPressHandled = false;
+  DateTime? _ignoreNumberOpenUntil;
+  bool _openedNumberOnDown = false;
 
   ui.Image? _bgImage;
   Size _imageSize = Size.zero;
@@ -83,9 +114,12 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
 
   List<LineSeg> get _snapLines => _snap.lines;
 
+  double _scaleK = 1;
+
   @override
   void initState() {
     super.initState();
+    _scaleK = widget.drawing.scalePxPerMm ?? 1;
     _boot();
   }
 
@@ -99,7 +133,18 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
   Future<void> _boot() async {
     final state = context.read<AppState>();
     final m = await state.db.getMeasurement(widget.measurementId);
-    final bytes = await File(widget.drawing.localPath).readAsBytes();
+    // 比例尺は DB → SharedPreferences の順でローカル復元
+    var drawing = await state.db.getDrawing(widget.drawing.id) ?? widget.drawing;
+    var k = drawing.scalePxPerMm;
+    if (k == null || k <= 0) {
+      final prefs = await SharedPreferences.getInstance();
+      k = prefs.getDouble('drawing_scale_${drawing.id}');
+      if (k != null && k > 0) {
+        drawing = drawing.copyWith(scalePxPerMm: k);
+        await state.saveDrawing(drawing);
+      }
+    }
+    final bytes = await File(drawing.localPath).readAsBytes();
     final codec = await ui.instantiateImageCodec(bytes);
     final frame = await codec.getNextFrame();
     _bgImage = frame.image;
@@ -110,6 +155,7 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
 
     if (!mounted) return;
     setState(() {
+      _scaleK = drawing.scalePxPerMm ?? 1;
       _measurement = m;
       if ((m?.openings.isNotEmpty ?? false)) {
         _openingSetupDone = true;
@@ -117,7 +163,7 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
     });
   }
 
-  double get _k => widget.drawing.scalePxPerMm ?? 1;
+  double get _k => _scaleK > 0 ? _scaleK : 1;
 
   double get _viewScale {
     final s = _transform.value.getMaxScaleOnAxis();
@@ -128,6 +174,18 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
     final p = Point2(raw.dx, raw.dy);
     if (!_snapEnabled) return p;
     return _snap.snap(p);
+  }
+
+  void _toggleSnap() {
+    setState(() => _snapEnabled = !_snapEnabled);
+    final ms = Ms.of(context);
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(_snapEnabled ? ms.snapOnHint : ms.snapOffHint),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   Offset _tipFromFinger(Offset finger) {
@@ -194,6 +252,25 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
     _holdTicker?.cancel();
     if (!_touching || _mouseTip == null || !mounted) return;
 
+    if (_dropSecWidthMode) {
+      setState(() {
+        _mouseReady = true;
+        _holdProgress = 1;
+      });
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            Ms.of(context).greenConfirmMark(
+              dropWidthCircleLabel(_dropSecWidthTurnIndex),
+            ),
+          ),
+          duration: const Duration(milliseconds: 1400),
+        ),
+      );
+      return;
+    }
+
     if (_tool == CanvasTool.wallPen) {
       final tip = _mouseTip!;
       setState(() {
@@ -218,8 +295,8 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
         SnackBar(
           content: Text(
             _wallPoints.length <= 1
-                ? '緑：起点確定。マウス先端を次の点へ移動'
-                : '緑：点を確定。続けて移動／終点なら離して完了',
+                ? Ms.of(context).greenStartNext
+                : Ms.of(context).greenPointContinue,
           ),
           duration: const Duration(milliseconds: 1400),
         ),
@@ -229,11 +306,56 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
       setState(() {
         _mouseReady = true;
         _holdProgress = 1;
-        if (_ceilingDraft.isEmpty ||
+        final nearStart = _ceilingDraft.length >= 3 &&
+            (tip - _ceilingDraft.first).distance <= 40;
+        if (nearStart) {
+          // 始点へ閉合（頂点は増やさない）
+        } else if (_ceilingDraft.isEmpty ||
             (_ceilingDraft.last - tip).distance >= 12) {
           _ceilingDraft.add(tip);
         }
       });
+      final closed = _ceilingDraft.length >= 3 &&
+          _mouseTip != null &&
+          (_mouseTip! - _ceilingDraft.first).distance <= 40;
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            closed
+                ? Ms.of(context).closeOkRelease
+                : (_ceilingDraft.length < 3
+                    ? Ms.of(context).greenNeed3
+                    : Ms.of(context).greenContinueClose),
+          ),
+          duration: const Duration(milliseconds: 1400),
+        ),
+      );
+    } else if (_tool == CanvasTool.dropPen) {
+      final tip = _mouseTip!;
+      setState(() {
+        _mouseTip = tip;
+        _mouseReady = true;
+        _holdProgress = 1;
+        if (_dropDraft.isEmpty ||
+            (_dropDraft.last - tip).distance >= 12) {
+          _dropDraft.add(tip);
+        }
+      });
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      final n = _dropDraft.length;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            n <= 1
+                ? Ms.of(context).greenDropStart
+                : (n == 2
+                    ? Ms.of(context).greenDropBend
+                    : Ms.of(context).greenDropMore),
+          ),
+          duration: const Duration(milliseconds: 1400),
+        ),
+      );
     } else if (_tool == CanvasTool.openingReinforce) {
       final tip = _mouseTip!;
       setState(() {
@@ -247,9 +369,9 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
       });
       if (_openingDraft.length == 1) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('1点目確定。開口のもう一端へ移動して確定'),
-            duration: Duration(milliseconds: 1400),
+          SnackBar(
+            content: Text(Ms.of(context).openingFirstPoint),
+            duration: const Duration(milliseconds: 1400),
           ),
         );
       }
@@ -278,12 +400,16 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
     }
     if (cleaned.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('点が足りません。赤→緑で2点以上取ってください')),
+        SnackBar(content: Text(Ms.of(context).needMorePoints)),
       );
       return;
     }
     _clearWallDraft();
     await _commitWallLine(cleaned);
+    _armNumberOpenIgnore();
+    if (mounted) {
+      setState(() => _tool = CanvasTool.pan);
+    }
   }
 
   /// 画完：単線＝新番号／多線＝同一番号に長さ合算（番号は最新線尾へ）
@@ -311,8 +437,8 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
         final linked = existing.copyWith(
           points: mergedPts,
           chainStarts: newStarts,
-          highlightArgb: _drawColorArgb,
-          strokeWidth: _strokeWidth,
+          highlightArgb: existing.highlightArgb ?? _drawColorArgb,
+          strokeWidth: existing.strokeWidth,
         );
         final qty = CalcEngine.calcWall(
           points: mergedPts,
@@ -331,12 +457,20 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
         );
         if (!mounted) return;
         final num = _wallNumber(existing.id);
+        final openingM2 = qty['opening_area_m2'] ?? 0.0;
+        final netM2 = qty['wall_net_area_m2'] ?? 0.0;
         setState(() => _selectedWallId = existing.id);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '線 $num に追加（${updatedWall.chains.length}本合算）。'
-              '番号は最新線尾。完了したら番号タップ',
+              openingM2 > 0
+                  ? Ms.of(context).wallMergedOpen(
+                      num,
+                      updatedWall.chains.length,
+                      netM2.toStringAsFixed(2),
+                      openingM2.toStringAsFixed(2),
+                    )
+                  : Ms.of(context).wallMerged(num, updatedWall.chains.length),
             ),
             duration: const Duration(seconds: 2),
           ),
@@ -347,8 +481,19 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
       _continueWallId = null;
     }
 
-    const method = WallMethod();
+    final method = _wallDrawMode == WallDrawMode.ironPlate
+        ? const WallMethod(
+            useLgs: false,
+            useBoard: false,
+            useBoardFaceA: false,
+            useBoardFaceB: false,
+            bothSides: false,
+            useFureDome: false,
+            useIronPlate: true,
+          )
+        : const WallMethod();
     const heightMm = 2700.0;
+    final ironMeasured = _wallDrawMode == WallDrawMode.ironPlate;
     final seg = WallSegment(
       id: context.read<AppState>().newId(),
       points: pts,
@@ -358,6 +503,7 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
       highlightArgb: _drawColorArgb,
       strokeWidth: _strokeWidth,
       estimateReady: false,
+      ironPlateMeasured: ironMeasured,
     );
     var openings = _linkOpeningsToWall(_measurement!.openings, seg);
     final hasReinforce = openings.any(
@@ -371,13 +517,28 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
             reinforceLengthMm: heightMm,
           )
         : method;
-    final qty = CalcEngine.calcWall(
-      points: pts,
-      heightMm: heightMm,
-      scalePxPerMm: _k,
-      method: method2,
-      openings: openings.where((o) => o.wallId == seg.id).toList(),
+    final qty = Map<String, double>.from(
+      CalcEngine.calcWall(
+        points: pts,
+        heightMm: heightMm,
+        scalePxPerMm: _k,
+        method: method2,
+        openings: openings.where((o) => o.wallId == seg.id).toList(),
+      ),
     );
+    final painted = _paintedMmOfPoints(pts);
+    var fullRun = 0.0;
+    for (var i = 0; i < pts.length - 1; i++) {
+      fullRun += CalcEngine.pxToMm(CalcEngine.distPx(pts[i], pts[i + 1]), _k);
+    }
+    if (fullRun > 0 || painted.runMm > 0) {
+      qty['wall_length_mm'] = fullRun > 0 ? fullRun : painted.runMm;
+      qty['iron_plate_measure_mm'] =
+          ironMeasured ? (fullRun > 0 ? fullRun : painted.runMm) : painted.tipMm;
+    }
+    if (ironMeasured) {
+      qty['iron_plate_draw'] = 1;
+    }
     final seg2 = WallSegment(
       id: seg.id,
       points: pts,
@@ -387,28 +548,35 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
       highlightArgb: _drawColorArgb,
       strokeWidth: _strokeWidth,
       estimateReady: false,
+      ironPlateMeasured: ironMeasured,
     );
-    final updated = _measurement!.copyWith(
-      walls: [..._measurement!.walls, seg2],
-      openings: openings,
+    final walls = [..._measurement!.walls, seg2];
+    await _persist(
+      _measurement!.copyWith(walls: walls, openings: openings),
     );
-    await _persist(updated);
     if (!mounted) return;
-    if (_wallDrawMode == WallDrawMode.multi) {
-      _continueWallId = seg2.id;
-    } else {
-      _continueWallId = null;
-    }
-    final num = updated.walls.length;
+    _continueWallId =
+        _wallDrawMode == WallDrawMode.multi ? seg2.id : null;
     setState(() => _selectedWallId = seg2.id);
+    final openingM2 = qty['opening_area_m2'] ?? 0.0;
+    final netM2 = qty['wall_net_area_m2'] ?? qty['wall_gross_area_m2'] ?? 0.0;
+    final num = _wallNumber(seg2.id);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          _wallDrawMode == WallDrawMode.multi
-              ? '線 $num 開始（多線）。続けて画線で合算／番号タップで工法選択'
-              : '線 $num を追加。線尾の番号をタップ → 工法選択 / 削除',
+          openingM2 > 0
+              ? Ms.of(context).wallAreaOpen(
+                  num,
+                  netM2.toStringAsFixed(2),
+                  openingM2.toStringAsFixed(2),
+                )
+              : _wallDrawMode == WallDrawMode.ironPlate
+                  ? Ms.of(context).ironLineAdded
+                  : (_wallDrawMode == WallDrawMode.multi
+                      ? Ms.of(context).wallMultiStarted(num)
+                      : Ms.of(context).wallLineAdded(num)),
         ),
-        duration: const Duration(seconds: 2),
+        duration: const Duration(seconds: 3),
       ),
     );
   }
@@ -435,36 +603,42 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                     ),
                   ),
                 ),
-                const Text(
-                  '壁マウス — 画線モード',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                Text(
+                  Ms.of(ctx).wallDrawTitle,
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
                 ),
                 const SizedBox(height: 12),
                 ListTile(
                   leading: const Icon(Icons.timeline, color: AppTheme.navy),
-                  title: const Text(
-                    '単線',
-                    style: TextStyle(fontWeight: FontWeight.w800),
+                  title: Text(
+                    Ms.of(ctx).singleLine,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
-                  subtitle: const Text('1本の線ごとに番号が付きます'),
+                  subtitle: Text(Ms.of(ctx).singleLineSub),
                   onTap: () => Navigator.pop(ctx, WallDrawMode.single),
                 ),
                 ListTile(
                   leading: const Icon(Icons.account_tree, color: AppTheme.accent),
-                  title: const Text(
-                    '多線',
-                    style: TextStyle(fontWeight: FontWeight.w800),
+                  title: Text(
+                    Ms.of(ctx).multiLine,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
-                  subtitle: const Text(
-                    '複数線を合算して1つの番号。壁高さ・工法は同一にしてください。'
-                    '交差点はスタッド3本を加算します',
-                  ),
+                  subtitle: Text(Ms.of(ctx).multiLineSub),
                   isThreeLine: true,
                   onTap: () => Navigator.pop(ctx, WallDrawMode.multi),
                 ),
+                ListTile(
+                  leading: const Icon(Icons.square_foot, color: AppTheme.navy),
+                  title: Text(
+                    Ms.of(ctx).ironOnly,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  subtitle: Text(Ms.of(ctx).ironOnlySub),
+                  onTap: () => Navigator.pop(ctx, WallDrawMode.ironPlate),
+                ),
                 TextButton(
                   onPressed: () => Navigator.pop(ctx),
-                  child: const Text('キャンセル'),
+                  child: Text(S.of(ctx).cancel),
                 ),
               ],
             ),
@@ -474,49 +648,830 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
     );
   }
 
-  Future<void> _confirmCeiling() async {
-    if (_ceilingDraft.length < 3 || _measurement == null) {
+  int _maxCeilingGroupNumber() {
+    final list = _measurement?.ceilings ?? const <CeilingRegion>[];
+    var maxN = 0;
+    for (final c in list) {
+      if (c.groupNumber > maxN) maxN = c.groupNumber;
+    }
+    return maxN;
+  }
+
+  CeilingRegion? _lastCeiling() {
+    final list = _measurement?.ceilings;
+    if (list == null || list.isEmpty) return null;
+    return list.last;
+  }
+
+  /// 統合中は既存番号の色を使う。線色バーを変えても既描画は変えない。
+  int _colorForNewCeiling() {
+    if (_ceilingUnifyWithPrevious) {
+      final last = _lastCeiling();
+      if (last?.highlightArgb != null) return last!.highlightArgb!;
+      for (final c in _measurement?.ceilings ?? const <CeilingRegion>[]) {
+        if (c.groupNumber == _ceilingGroupNumber && c.highlightArgb != null) {
+          return c.highlightArgb!;
+        }
+      }
+    }
+    return _drawColorArgb;
+  }
+
+  int _colorForNewDrop() {
+    if (_dropUnifyWithPrevious) {
+      final last = _lastDrop();
+      if (last?.highlightArgb != null) return last!.highlightArgb!;
+    }
+    return _drawColorArgb;
+  }
+
+  Future<bool> _askCeilingUnify() async {
+    final last = _lastCeiling();
+    final lastNum = last?.groupNumber ?? 1;
+    final nextNum = _maxCeilingGroupNumber() + 1;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(Ms.of(ctx).mergeCeilTitle),
+        content: Text(Ms.of(ctx).mergeCeilBody(lastNum, nextNum)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(S.of(ctx).cancel),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(Ms.of(ctx).mergeNo(nextNum)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(Ms.of(ctx).mergeYes(lastNum)),
+          ),
+        ],
+      ),
+    );
+    if (go == null) return false;
+    setState(() {
+      _ceilingUnifyWithPrevious = go;
+      if (go) {
+        _ceilingGroupNumber = lastNum;
+        if (last?.highlightArgb != null) {
+          _drawColorArgb = last!.highlightArgb!;
+        }
+      } else {
+        _ceilingGroupNumber = nextNum;
+      }
+    });
+    return true;
+  }
+
+  Future<void> _activateCeilingPen() async {
+    final hasCeilings = _measurement?.ceilings.isNotEmpty ?? false;
+    if (hasCeilings) {
+      final ok = await _askCeilingUnify();
+      if (!ok || !mounted) return;
+    } else {
+      _ceilingGroupNumber = 1;
+      _ceilingUnifyWithPrevious = false;
+    }
+    setState(() {
+      _tool = CanvasTool.ceilingPen;
+      _ceilingDraft.clear();
+      _clearWallDraft(notify: false);
+      _openingDraft.clear();
+      _dropDraft.clear();
+      _continueWallId = null;
+    });
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          _ceilingUnifyWithPrevious
+              ? Ms.of(context).ceilMouseMerged(_ceilingGroupNumber)
+              : Ms.of(context).ceilMouse(_ceilingGroupNumber),
+        ),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _clearDropSecWidthMode({bool clearMouse = true}) {
+    _dropSecWidthMode = false;
+    _dropSecWidthDropId = null;
+    _dropSecWidthOrigin = null;
+    _dropSecWidthTurnIndex = 2;
+    _dropWidthPlusHits.clear();
+    if (clearMouse) {
+      _touching = false;
+      _mouseTip = null;
+      _mouseReady = false;
+      _holdProgress = 0;
+    }
+  }
+
+  DropRegion? _lastDrop() {
+    final list = _measurement?.drops ?? const <DropRegion>[];
+    if (list.isEmpty) return null;
+    return list.last;
+  }
+
+  int _maxDropGroupNumber() {
+    var n = 0;
+    for (final d in _measurement?.drops ?? const <DropRegion>[]) {
+      if (d.groupNumber > n) n = d.groupNumber;
+    }
+    return n;
+  }
+
+  Future<bool> _askDropUnify() async {
+    final last = _lastDrop();
+    final lastNum = last?.groupNumber ?? 1;
+    final nextNum = _maxDropGroupNumber() + 1;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(Ms.of(ctx).mergeDropTitle),
+        content: Text(Ms.of(ctx).mergeDropBody(lastNum, nextNum)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(S.of(ctx).cancel),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(Ms.of(ctx).mergeNo(nextNum)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(Ms.of(ctx).mergeYes(lastNum)),
+          ),
+        ],
+      ),
+    );
+    if (go == null) return false;
+    setState(() {
+      _dropUnifyWithPrevious = go;
+      if (go) {
+        _dropGroupNumber = lastNum;
+        if (last?.highlightArgb != null) {
+          _drawColorArgb = last!.highlightArgb!;
+        }
+      } else {
+        _dropGroupNumber = nextNum;
+      }
+    });
+    return true;
+  }
+
+  Future<void> _showDropDrawGuide() async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(Ms.of(ctx).dropGuideTitle),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const DropDrawGuide(width: 220, height: 150),
+            const SizedBox(height: 12),
+            Text(Ms.of(ctx).dropGuideBody),
+          ],
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(Ms.of(ctx).confirm),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _activateDropPen() async {
+    final hasDrops = _measurement?.drops.isNotEmpty ?? false;
+    if (hasDrops) {
+      final ok = await _askDropUnify();
+      if (!ok || !mounted) return;
+    } else {
+      _dropGroupNumber = 1;
+      _dropUnifyWithPrevious = false;
+    }
+    setState(() {
+      _dropDraft.clear();
+      _dropDraftTurnWidths.clear();
+      _clearDropSecWidthMode();
+      _tool = CanvasTool.dropPen;
+      _clearWallDraft(notify: false);
+      _openingDraft.clear();
+      _ceilingDraft.clear();
+    });
+    if (!mounted) return;
+    await _showDropDrawGuide();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          _dropUnifyWithPrevious
+              ? Ms.of(context).dropMouseMerged(_dropGroupNumber)
+              : Ms.of(context).dropMouse(_dropGroupNumber),
+        ),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  bool _hitDrop(DropRegion d, Offset p, {double thresh = 18}) {
+    for (var i = 0; i < d.points.length - 1; i++) {
+      final a = Offset(d.points[i].x, d.points[i].y);
+      final b = Offset(d.points[i + 1].x, d.points[i + 1].y);
+      final ab = b - a;
+      final len2 = ab.dx * ab.dx + ab.dy * ab.dy;
+      if (len2 < 1e-6) {
+        if ((p - a).distance <= thresh) return true;
+        continue;
+      }
+      var t = ((p.dx - a.dx) * ab.dx + (p.dy - a.dy) * ab.dy) / len2;
+      t = t.clamp(0.0, 1.0);
+      final proj = Offset(a.dx + ab.dx * t, a.dy + ab.dy * t);
+      if ((p - proj).distance <= thresh) return true;
+    }
+    return false;
+  }
+
+  Future<void> _finishDropFromMouse() async {
+    if (_measurement == null || _dropDraft.length < 3) return;
+    final pts = [
+      for (final o in _dropDraft)
+        () {
+          final s = _snapPoint(o);
+          return Offset(s.x, s.y);
+        }(),
+    ];
+    final point2s = [for (final o in pts) Point2(o.dx, o.dy)];
+    // 始点→第1折点＝幅、それ以降の全区間合計＝長さ
+    final widthMm = CalcEngine.pxToMm((pts[1] - pts[0]).distance, _k);
+    var lengthMm = 0.0;
+    for (var i = 1; i < pts.length - 1; i++) {
+      lengthMm += CalcEngine.pxToMm((pts[i + 1] - pts[i]).distance, _k);
+    }
+    final turns = List<DropTurnWidth>.from(_dropDraftTurnWidths);
+    setState(() {
+      _mouseTip = null;
+      _mouseReady = false;
+      _holdProgress = 0;
+    });
+    DropMethod method = const DropMethod();
+    var heightMm = 300.0;
+    if (_dropUnifyWithPrevious) {
+      final last = _lastDrop();
+      if (last != null) {
+        method = last.method;
+        if (last.heightMm > 0) heightMm = last.heightMm;
+      }
+    }
+    final qty = DropCalc.calc(
+      lengthMm: lengthMm,
+      widthMm: widthMm,
+      heightMm: heightMm,
+      method: method,
+      points: point2s,
+      scalePxPerMm: _k,
+      turnWidths: turns,
+    );
+    final drop = DropRegion(
+      id: context.read<AppState>().newId(),
+      points: point2s,
+      lengthMm: lengthMm,
+      widthMm: widthMm,
+      heightMm: heightMm,
+      turnWidths: turns,
+      method: method,
+      quantities: qty,
+      highlightArgb: _colorForNewDrop(),
+      groupNumber: _dropGroupNumber,
+    );
+    await _persist(
+      _measurement!.copyWith(drops: [..._measurement!.drops, drop]),
+    );
+    if (!mounted) return;
+    setState(() {
+      _dropDraft.clear();
+      _dropDraftTurnWidths.clear();
+      _clearDropSecWidthMode();
+      _tool = CanvasTool.pan;
+      _selectedDropId = drop.id;
+    });
+    _armNumberOpenIgnore();
+    final nPlus = pts.length >= 4 ? Ms.of(context).dropPlusHint : '';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          turns.isNotEmpty
+              ? Ms.of(context).dropAddedExtra(drop.groupNumber, turns.length)
+              : '${Ms.of(context).dropAdded(drop.groupNumber)}$nPlus',
+        ),
+      ),
+    );
+  }
+
+  void _startDropSecondWidthMeasure(DropWidthPlusHit hit) {
+    _holdTicker?.cancel();
+    setState(() {
+      _dropSecWidthMode = true;
+      _dropSecWidthDropId = hit.isDraft ? null : hit.dropId;
+      _dropSecWidthOrigin = hit.origin;
+      _dropSecWidthTurnIndex = hit.turnIndex;
+      _mouseTip = hit.origin;
+      _mouseReady = false;
+      _holdProgress = 0;
+      // 指を一旦離してからドラッグ（InteractiveViewer のパンと競合しない）
+      _touching = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          Ms.of(context).secWidthDrag(dropWidthCircleLabel(hit.turnIndex)),
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  void _onPointerDownSecWidth(Offset local) {
+    final tip = _tipFromFinger(local);
+    setState(() {
+      _touching = true;
+      _mouseTip = tip;
+      _mouseReady = false;
+    });
+    _startHoldWatch(tip);
+  }
+
+  void _onPointerMoveSecWidth(Offset local) {
+    if (!_touching) return;
+    final tip = _tipFromFinger(local);
+    setState(() => _mouseTip = tip);
+    if (_holdAnchorTip != null &&
+        (tip - _holdAnchorTip!).distance > _stillPx) {
+      _resetHold(tip);
+      _startHoldWatch(tip);
+    }
+  }
+
+  void _onPointerUpSecWidth(Offset local) {
+    final wasReady = _mouseReady;
+    final tip = _mouseTip;
+    _holdTicker?.cancel();
+    if (wasReady && tip != null && _dropSecWidthOrigin != null) {
+      _finishDropSecondWidthMeasure(tip);
+    } else {
+      setState(() {
+        _touching = false;
+        _mouseTip = null;
+        _mouseReady = false;
+        _holdProgress = 0;
+      });
+    }
+  }
+
+  Future<void> _finishDropSecondWidthMeasure(Offset tip) async {
+    final origin = _dropSecWidthOrigin;
+    if (origin == null) return;
+    final turnIndex = _dropSecWidthTurnIndex;
+    final mm = CalcEngine.pxToMm((tip - origin).distance, _k);
+    if (mm < 10) {
+      setState(_clearDropSecWidthMode);
+      return;
+    }
+    final tw = DropTurnWidth(
+      turnIndex: turnIndex,
+      widthMm: mm,
+      from: Point2(origin.dx, origin.dy),
+      to: Point2(tip.dx, tip.dy),
+    );
+    final dropId = _dropSecWidthDropId;
+    if (dropId == null) {
+      setState(() {
+        _dropDraftTurnWidths
+          ..removeWhere((e) => e.turnIndex == turnIndex)
+          ..add(tw)
+          ..sort((a, b) => a.turnIndex.compareTo(b.turnIndex));
+        _clearDropSecWidthMode();
+      });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('3点以上（各点1.5秒）で領域を閉じてください')),
+        SnackBar(
+          content: Text(
+            Ms.of(context).secWidthRecorded(
+              dropWidthCircleLabel(turnIndex),
+              mm.round(),
+            ),
+          ),
+        ),
       );
       return;
+    }
+    if (_measurement == null) return;
+    DropRegion? drop;
+    for (final d in _measurement!.drops) {
+      if (d.id == dropId) {
+        drop = d;
+        break;
+      }
+    }
+    if (drop == null) return;
+    final updatedBase = drop.withTurnWidth(tw);
+    final qty = DropCalc.calc(
+      lengthMm: updatedBase.lengthMm,
+      widthMm: updatedBase.widthMm,
+      heightMm: updatedBase.heightMm,
+      method: updatedBase.method,
+      points: updatedBase.points,
+      scalePxPerMm: _k,
+      turnWidths: updatedBase.turnWidths,
+    );
+    final updated = updatedBase.copyWith(quantities: qty);
+    await _persist(
+      _measurement!.copyWith(
+        drops: [
+          for (final d in _measurement!.drops)
+            if (d.id == dropId) updated else d,
+        ],
+      ),
+    );
+    if (!mounted) return;
+    setState(_clearDropSecWidthMode);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          Ms.of(context).secWidthUpdated(
+            dropWidthCircleLabel(turnIndex),
+            mm.round(),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _editDrop(String dropId) async {
+    if (_measurement == null) return;
+    DropRegion? drop;
+    for (final d in _measurement!.drops) {
+      if (d.id == dropId) {
+        drop = d;
+        break;
+      }
+    }
+    if (drop == null) return;
+    if (await _blockFreeNumberPage(
+      deleteLabel: Ms.of(context).deleteThisDrop,
+      onDelete: () async {
+        await _persist(
+          _measurement!.copyWith(
+            drops: _measurement!.drops.where((d) => d.id != dropId).toList(),
+          ),
+        );
+        if (!mounted) return;
+        setState(() {
+          _selectedDropId = null;
+          _dropDraftTurnWidths.clear();
+          _clearDropSecWidthMode();
+        });
+      },
+    )) {
+      return;
+    }
+    final result = await showModalBottomSheet<DropSettingsResult>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => DropSettingsSheet(
+        initialLengthMm: drop!.lengthMm,
+        initialWidthMm: drop.widthMm,
+        initialHeightMm: drop.heightMm,
+        initialTurnWidths: drop.turnWidths,
+        initialPoints: drop.points,
+        scalePxPerMm: _k,
+        initialMethod: drop.method,
+        allowDelete: true,
+        groupNumber: drop.groupNumber,
+        projectName: _measurement?.name,
+        onEstimatePersist: (save) async {
+          if (!await FeatureAccess.requireFullAccess(context)) return;
+          await _persistEstimateSave(
+            save,
+            showSnack: false,
+            areaLabel: '下り',
+          );
+        },
+      ),
+    );
+    if (!mounted || result == null || _measurement == null) return;
+    if (result.action == DropSettingsAction.delete) {
+      await _persist(
+        _measurement!.copyWith(
+          drops: _measurement!.drops.where((d) => d.id != dropId).toList(),
+        ),
+      );
+      if (!mounted) return;
+      setState(() {
+        _selectedDropId = null;
+        _dropDraftTurnWidths.clear();
+        _clearDropSecWidthMode();
+      });
+      return;
+    }
+    final qty = DropCalc.calc(
+      lengthMm: result.lengthMm,
+      widthMm: result.widthMm,
+      heightMm: result.heightMm,
+      method: result.method,
+      points: drop.points,
+      scalePxPerMm: _k,
+      turnWidths: result.turnWidths,
+    );
+    final updated = drop.copyWith(
+      lengthMm: result.lengthMm,
+      widthMm: result.widthMm,
+      heightMm: result.heightMm,
+      turnWidths: result.turnWidths,
+      method: result.method,
+      quantities: qty,
+    );
+    await _persist(
+      _measurement!.copyWith(
+        drops: [
+          for (final d in _measurement!.drops)
+            if (d.id == dropId) updated else d,
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmCeiling({bool requireClosed = true}) async {
+    if (_ceilingDraft.length < 3 || _measurement == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(Ms.of(context).need3Points)),
+      );
+      return;
+    }
+    if (requireClosed) {
+      final closed = (_ceilingDraft.last - _ceilingDraft.first).distance <= 48;
+      if (!closed) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(Ms.of(context).returnToStartRing),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        return;
+      }
     }
     final pts = _ceilingDraft.map((o) {
       final s = _snapPoint(o);
       return Point2(s.x, s.y);
     }).toList();
 
-    final result = await showModalBottomSheet<CeilingParamsResult>(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => const CeilingParamsSheet(),
-    );
-    if (result == null) return;
+    final areaM2 = CalcEngine.polygonAreaMm2(pts, _k) / 1e6;
+    final groupNum = _ceilingGroupNumber <= 0
+        ? (_maxCeilingGroupNumber() + 1)
+        : _ceilingGroupNumber;
 
+    final sameGroup = _measurement!.ceilings
+        .where((c) => c.groupNumber == groupNum)
+        .toList();
+
+    // 先に領域を保存して番号を表示（工法シートを閉じても番号が残る）
+    final method = sameGroup.isNotEmpty
+        ? sameGroup.last.method.copyWith(showLayout: true)
+        : const CeilingMethod(showLayout: true);
     final qty = CalcEngine.calcCeiling(
       points: pts,
       scalePxPerMm: _k,
-      method: result.method,
+      method: method,
     );
     final region = CeilingRegion(
       id: context.read<AppState>().newId(),
       points: pts,
-      method: result.method,
+      method: method,
       quantities: qty,
+      highlightArgb: _colorForNewCeiling(),
+      groupNumber: groupNum,
     );
-    final updated = _measurement!.copyWith(
-      ceilings: [..._measurement!.ceilings, region],
-    );
+    final list = <CeilingRegion>[
+      ..._measurement!.ceilings,
+      region,
+    ];
+    final updated = _measurement!.copyWith(ceilings: list);
     await _persist(updated);
+    if (!mounted) return;
     setState(() {
       _ceilingDraft.clear();
       _mouseTip = null;
       _mouseReady = false;
+      _touching = false;
+      _tool = CanvasTool.pan; // 天井マウス自動オフ
+      _selectedCeilingId = region.id;
+      _ceilingGroupNumber = groupNum;
     });
+
+    if (_ceilingUnifyWithPrevious && sameGroup.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            Ms.of(context).ceilMergedArea(
+              groupNum,
+              areaM2.toStringAsFixed(2),
+            ),
+          ),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    _armNumberOpenIgnore();
+    // 有料／特典：番号表示後に工法シート。無料は番号だけ残す
+    if (!FeatureAccess.hasFullAccess(context.read<AppState>().user)) return;
+    await _openCeilingParams(region.id);
+  }
+
+  Future<void> _openCeilingParams(String ceilingId) async {
+    if (_measurement == null) return;
+    if (await _blockFreeNumberPage(
+      deleteLabel: Ms.of(context).deleteThisArea,
+      onDelete: () async {
+        final list = [..._measurement!.ceilings]
+          ..removeWhere((c) => c.id == ceilingId);
+        await _persist(_measurement!.copyWith(ceilings: list));
+      },
+    )) {
+      return;
+    }
+    final idx = _measurement!.ceilings.indexWhere((c) => c.id == ceilingId);
+    if (idx < 0) return;
+    final region = _measurement!.ceilings[idx];
+    final groupNum = region.groupNumber;
+    final areaM2 = region.quantities['ceiling_area_m2'] ??
+        CalcEngine.polygonAreaMm2(region.points, _k) / 1e6;
+
+    final result = await showModalBottomSheet<CeilingParamsResult>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => CeilingParamsSheet(
+        ceilingNumber: groupNum,
+        areaM2: areaM2,
+        initialMethod: region.method,
+        projectName: _measurement?.name,
+        onCrossEstimateSave: (save) async {
+          if (!await FeatureAccess.requireFullAccess(context)) return;
+          await _persistEstimateSave(save, showSnack: false);
+        },
+        onLiveUpdate: (m) async {
+          if (_measurement == null) return;
+          final list = [
+            for (final c in _measurement!.ceilings)
+              c.id == ceilingId
+                  ? c.copyWith(
+                      method: m,
+                      quantities: CalcEngine.calcCeiling(
+                        points: c.points,
+                        scalePxPerMm: _k,
+                        method: m,
+                      ),
+                    )
+                  : c,
+          ];
+          await _persist(_measurement!.copyWith(ceilings: list));
+          if (mounted) setState(() {});
+        },
+      ),
+    );
+    if (result == null || !mounted) return;
+
+    if (result.action == CeilingParamsAction.delete) {
+      final groupCount =
+          _measurement!.ceilings.where((c) => c.groupNumber == groupNum).length;
+      final ok = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(Ms.of(ctx).deleteCeilTitle),
+          content: Text(
+            groupCount > 1
+                ? Ms.of(ctx).deleteCeilGroup(groupNum, groupCount)
+                : Ms.of(ctx).deleteCeilOne(groupNum),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(S.of(ctx).cancel),
+            ),
+            if (groupCount > 1)
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'one'),
+                child: Text(Ms.of(ctx).thisRegionOnly),
+              ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'group'),
+              child: Text(
+                groupCount > 1 ? Ms.of(ctx).deleteGroupAll(groupNum) : S.of(ctx).delete,
+                style: TextStyle(color: Colors.red.shade700),
+              ),
+            ),
+          ],
+        ),
+      );
+      if (ok == 'one') {
+        final list =
+            [..._measurement!.ceilings]..removeWhere((c) => c.id == ceilingId);
+        await _persist(_measurement!.copyWith(ceilings: list));
+      } else if (ok == 'group') {
+        final list = [..._measurement!.ceilings]
+          ..removeWhere((c) => c.groupNumber == groupNum);
+        await _persist(_measurement!.copyWith(ceilings: list));
+      }
+      return;
+    }
+
+    final method = result.method.copyWith(showLayout: true);
+    final list = [
+      for (final c in _measurement!.ceilings)
+        c.id == ceilingId
+            ? c.copyWith(
+                method: method,
+                quantities: CalcEngine.calcCeiling(
+                  points: c.points,
+                  scalePxPerMm: _k,
+                  method: method,
+                ),
+              )
+            : c,
+    ];
+    final updated = _measurement!.copyWith(ceilings: list);
+    await _persist(updated);
     if (!mounted) return;
 
+    if (result.action == CeilingParamsAction.estimate) {
+      if (!await FeatureAccess.requireFullAccess(context)) return;
+      if (!mounted) return;
+      await _openCeilingMaterialSettings(groupNum, ceilingId: ceilingId);
+    }
+  }
+
+  Future<void> _openCeilingMaterialSettings(
+    int groupNum, {
+    required String ceilingId,
+  }) async {
+    if (_measurement == null) return;
+    final current = _measurement!.ceilings
+        .where((c) => c.id == ceilingId)
+        .toList();
+    if (current.isEmpty) return;
+    if (!await FeatureAccess.requireFullAccess(context)) return;
+    if (!mounted) return;
+    final material = await Navigator.of(context).push<CeilingMaterialResult>(
+      MaterialPageRoute(
+        builder: (_) => CeilingMaterialSheet(
+          ceilings: current,
+          scalePxPerMm: _k,
+          ceilingNumber: groupNum,
+          initialMethod: current.first.method,
+        ),
+      ),
+    );
+    if (material == null || !mounted || _measurement == null) return;
+
+    final mat = material.method;
+    final list = <CeilingRegion>[
+      for (final c in _measurement!.ceilings)
+        if (c.id != ceilingId)
+          c
+        else
+        c.copyWith(
+          method: mat,
+          quantities: CalcEngine.calcCeiling(
+            points: c.points,
+            scalePxPerMm: _k,
+            method: mat,
+          ),
+        ),
+    ];
+    final updated = _measurement!.copyWith(ceilings: list);
+    await _persist(updated);
+    if (!mounted) return;
+    if (material.action == CeilingMaterialAction.estimate) {
+      await _openCeilingEstimate(updated, groupNum: groupNum);
+    }
+  }
+
+  Future<void> _openCeilingEstimate(
+    Measurement updated, {
+    int? groupNum,
+  }) async {
+    if (!await FeatureAccess.requireFullAccess(context)) return;
+    if (!mounted) return;
     final ceilingOnly = <EstimateLine>[];
-    for (final c in updated.ceilings) {
+    final src = groupNum == null
+        ? updated.ceilings
+        : updated.ceilings.where((c) => c.groupNumber == groupNum);
+    for (final c in src) {
       ceilingOnly.addAll(
         EstimateBuilder.fromCeiling(
           ceiling: c,
@@ -530,32 +1485,45 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
     );
     SiteProject? project;
     try {
-      project = await context.read<AppState>().db.getProject(
-            updated.projectId,
-          );
+      project = await context.read<AppState>().db.getProject(updated.projectId);
     } catch (_) {}
     if (!mounted) return;
     final areas = EstimateBuilder.areasFromMeasurement(
       updated,
       onlyEstimateReady: false,
+      includeWalls: false,
+      ceilingGroupNumber: groupNum,
     );
-    if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => EstimateTableScreen(
-          title: '試算表',
+          title: Ms.of(context).estimateCeil,
           initialLines: merged,
-          projectName: project?.name ?? updated.name,
+          projectName: updated.name,
           siteAddress: project?.address,
           sitePhone: project?.phone,
           siteContact: project?.contactName,
           areaLabel: '天井',
           areaM2: areas.lgsM2 > 0 ? areas.lgsM2 : null,
           lgsAreaM2: areas.lgsM2 > 0 ? areas.lgsM2 : null,
+          lgsMethodLabel: EstimateBuilder.lgsMethodLabel(
+            updated,
+            areaKind: '天井',
+            onlyEstimateReady: false,
+            ceilingGroupNumber: groupNum,
+          ),
           boardAreaM2: areas.boardM2 > 0 ? areas.boardM2 : null,
-          rockFeltM: areas.rockFeltM > 0 ? areas.rockFeltM : null,
-          glassWoolM2: areas.glassWoolM2 > 0 ? areas.glassWoolM2 : null,
-          onSavePersist: (save) => _persistEstimateSave(save, showSnack: false),
+          boardAreaParts: EstimateBuilder.boardAreasByName(
+            updated,
+            areaKind: '天井',
+            onlyEstimateReady: false,
+            ceilingGroupNumber: groupNum,
+          ),
+          onSavePersist: (save) => _persistEstimateSave(
+            save,
+            showSnack: false,
+            areaLabel: '天井',
+          ),
         ),
       ),
     );
@@ -563,14 +1531,13 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
 
   Future<void> _rotateCeilingGrid(CeilingRegion region) async {
     if (_measurement == null) return;
-    final rotated = CeilingRegion(
-      id: region.id,
-      points: region.points,
-      method: region.method.copyWith(rotated90: !region.method.rotated90),
+    final method = region.method.copyWith(rotated90: !region.method.rotated90);
+    final rotated = region.copyWith(
+      method: method,
       quantities: CalcEngine.calcCeiling(
         points: region.points,
         scalePxPerMm: _k,
-        method: region.method.copyWith(rotated90: !region.method.rotated90),
+        method: method,
       ),
     );
     final list = _measurement!.ceilings
@@ -584,19 +1551,17 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
       final ok = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('壁線を削除'),
-          content: const Text(
-            'この壁線を削除しますか？\n試算表に含まれている場合、対応する数量も除外されます。',
-          ),
+          title: Text(Ms.of(ctx).deleteWallTitle),
+          content: Text(Ms.of(ctx).deleteWallBody),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('キャンセル'),
+              child: Text(S.of(ctx).cancel),
             ),
             ElevatedButton(
               onPressed: () => Navigator.pop(ctx, true),
               style: ElevatedButton.styleFrom(backgroundColor: AppTheme.danger),
-              child: const Text('削除'),
+              child: Text(S.of(ctx).delete),
             ),
           ],
         ),
@@ -615,9 +1580,9 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
       if (_continueWallId == wallId) _continueWallId = null;
     });
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('線を削除しました（試算数量も更新）'),
-        duration: Duration(seconds: 2),
+      SnackBar(
+        content: Text(Ms.of(context).wallDeleted),
+        duration: const Duration(seconds: 2),
       ),
     );
   }
@@ -642,100 +1607,265 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
   }
 
   int _wallNumber(String wallId) {
-    final walls = _measurement?.walls ?? const [];
-    for (var i = 0; i < walls.length; i++) {
-      if (walls[i].id == wallId) return i + 1;
+    var n = 0;
+    for (final w in _measurement?.walls ?? const []) {
+      if (w.isIronPlate) continue;
+      n++;
+      if (w.id == wallId) return n;
     }
-    return 1;
+    return n < 1 ? 1 : n;
+  }
+
+  void _armNumberOpenIgnore() {
+    _ignoreNumberOpenUntil =
+        DateTime.now().add(const Duration(milliseconds: 700));
+  }
+
+  bool get _ignoreNumberOpen =>
+      _ignoreNumberOpenUntil != null &&
+      DateTime.now().isBefore(_ignoreNumberOpenUntil!);
+
+  /// 無料：番号ページは見られない。画線直後の誤タップは黙って無視。
+  Future<bool> _blockFreeNumberPage({
+    required String deleteLabel,
+    required Future<void> Function() onDelete,
+  }) async {
+    if (FeatureAccess.hasFullAccess(context.read<AppState>().user)) {
+      return false;
+    }
+    if (_ignoreNumberOpen) return true;
+    final delete = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(S.of(ctx).upgradeTitle),
+        content: Text(S.of(ctx).upgradeMessage),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(S.of(ctx).close),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(deleteLabel),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx, false);
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const AccountScreen()),
+              );
+            },
+            child: Text(S.of(ctx).goAccount),
+          ),
+        ],
+      ),
+    );
+    if (delete == true) await onDelete();
+    return true;
   }
 
   Future<void> _openWallMaterial(String wallId) async {
-    final wall = _wallById(wallId);
+    var wall = _wallById(wallId);
     if (wall == null || _measurement == null) return;
-    setState(() => _selectedWallId = wallId);
-
-    final result = await showModalBottomSheet<WallMaterialResult>(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => WallMaterialSheet(
-        initialMethod: wall.method,
-        initialHeightMm: wall.heightMm,
-        wallNumber: _wallNumber(wallId),
-        measuredLengthMm: wall.quantities['wall_length_mm'] ??
-            _qtyForWall(wall)['wall_length_mm'],
-      ),
-    );
-    if (result == null || _measurement == null || !mounted) return;
-
-    if (result.action == WallMaterialAction.delete) {
-      await _deleteWall(wallId);
+    if (await _blockFreeNumberPage(
+      deleteLabel: Ms.of(context).deleteThisLine,
+      onDelete: () => _deleteWall(wallId),
+    )) {
       return;
     }
+    setState(() => _selectedWallId = wallId);
+
+    // 番号タップ時に開口を再紐付け（未紐付け・近傍・壁が1本なら全部）
+    final linked = _attachOpeningsToWall(wall);
+    if (linked) {
+      wall = _wallById(wallId);
+      if (wall == null || _measurement == null) return;
+      await _persist(_measurement!);
+      if (!mounted) return;
+      wall = _wallById(wallId);
+      if (wall == null) return;
+    }
+
+    // 鉄板専用で画いた線だけ T。材料選択の鉄板ONはここでは見ない
+    final drawnAsIron = _isIronWall(wall);
+    final tLen = _tIronLengthMm(drawnAsIron ? wall : null);
+    if (drawnAsIron) {
+      final ironAction = await showModalBottomSheet<IronPlateMeasureAction>(
+        context: context,
+        isScrollControlled: true,
+        useRootNavigator: true,
+        builder: (_) => IronPlateMeasureSheet(lengthMm: tLen),
+      );
+      if (ironAction == null || _measurement == null || !mounted) return;
+      if (ironAction == IronPlateMeasureAction.delete) {
+        await _deleteWall(wallId);
+        return;
+      }
+    } else {
+      late WallMaterialResult result;
+      while (mounted && _measurement != null) {
+      wall = _wallById(wallId);
+      if (wall == null) return;
+      final painted = _paintedMm(wall);
+      final sheetResult = await showModalBottomSheet<WallMaterialResult>(
+        context: context,
+        isScrollControlled: true,
+        useRootNavigator: true,
+        builder: (_) => WallMaterialSheet(
+          initialMethod: wall!.method,
+          initialHeightMm: wall.heightMm,
+          wallNumber: _wallNumber(wallId),
+          measuredLengthMm: painted.runMm,
+          measuredOpeningAreaM2: wall.quantities['opening_area_m2'] ??
+              _qtyForWall(wall)['opening_area_m2'],
+          ironPlateMeasured: drawnAsIron,
+          projectName: _measurement?.name,
+          onCrossEstimateSave: (save) =>
+              _persistEstimateSave(save, showSnack: false),
+        ),
+      );
+      if (sheetResult == null || _measurement == null || !mounted) return;
+      result = sheetResult;
+
+      if (result.action == WallMaterialAction.delete) {
+        await _deleteWall(wallId);
+        return;
+      }
+
+      wall = _wallById(wallId);
+      if (wall == null) return;
+      await _applyWallBasicResult(wall, result, drawnAsIron: drawnAsIron);
+      if (!mounted || _measurement == null) return;
+
+      if (result.action == WallMaterialAction.openCross) {
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        if (!mounted || _measurement == null) return;
+        await _openCrossDedicatedForWall(wallId);
+        if (!mounted || _measurement == null) return;
+        continue;
+      }
+      break;
+    }
+    }
+    if (!mounted || _measurement == null) return;
+    wall = _wallById(wallId);
+    if (wall == null) return;
 
     // 番号タップ＝このグループ確定（多線の続きを終了）
     if (_continueWallId == wallId) {
       _continueWallId = null;
     }
 
-    final qty = _qtyForWall(
-      wall,
-      method: result.method,
-      heightMm: result.heightMm,
-    );
-    final working = wall.copyWith(
-      method: result.method,
-      heightMm: result.heightMm,
-      quantities: qty,
-    );
-    final walls = _measurement!.walls
-        .map((w) => w.id == wallId ? working : w)
-        .toList();
-    await _persist(_measurement!.copyWith(walls: walls));
-    if (!mounted) return;
+    final paintedNow = _paintedMm(wall);
+    final ironMeasured = drawnAsIron || _isIronWall(wall);
+    final measureLen = paintedNow.runMm > 0 ? paintedNow.runMm : paintedNow.tipMm;
+    final working = wall;
 
-    // 工法選択 → 試算表
-    // 工法選択 → 積算確定後に試算表（確定済み全線を合算）
-    final openings = _openingsForWall(wallId);
+    // 工法選択 → 材料選択 → 試算表
+    final openings = _effectiveOpeningsForWall(wallId);
+    final hasOpenings = openings.isNotEmpty;
     final hasReinforce = openings.any(
       (o) => o.material == OpeningMaterialKind.reinforce,
     );
     var paramsMethod = working.method;
-    if (hasReinforce) {
+    final hasTLine = ironMeasured || tLen > 0;
+    if (hasTLine) {
+      paramsMethod = paramsMethod.copyWith(useIronPlate: true);
+    }
+    if (hasOpenings) {
+      paramsMethod = paramsMethod.copyWith(useAnglePiece: true);
+    }
+    if (hasOpenings) {
       final studLen = paramsMethod.studLengthMm > 0
           ? paramsMethod.studLengthMm
           : working.heightMm;
       paramsMethod = paramsMethod.copyWith(
         useReinforceMaterial: true,
-        reinforceWidthMm: paramsMethod.reinforceWidthMm > 0
-            ? paramsMethod.reinforceWidthMm
+        reinforceWidthMm: paramsMethod.runnerWidthMm > 0
+            ? paramsMethod.runnerWidthMm
             : paramsMethod.studWidthMm,
         reinforceLengthMm: paramsMethod.reinforceLengthMm > 0
             ? paramsMethod.reinforceLengthMm
             : studLen,
       );
     }
+    final stockLen = paramsMethod.reinforceLengthMm > 0
+        ? paramsMethod.reinforceLengthMm
+        : (paramsMethod.studLengthMm > 0
+            ? paramsMethod.studLengthMm
+            : working.heightMm);
+    final reinforceOpenings = hasReinforce
+        ? openings
+        : [
+            for (final o in openings)
+              o.copyWith(material: OpeningMaterialKind.reinforce),
+          ];
     final params = await showModalBottomSheet<WallParamsResult>(
       context: context,
       isScrollControlled: true,
+      useRootNavigator: true,
       builder: (_) => WallParamsSheet(
         initialHeightMm: working.heightMm,
         initialMethod: paramsMethod,
-        measuredLengthMm: working.quantities['wall_length_mm'],
+        measuredLengthMm: ironMeasured ? tLen : measureLen,
+        ironDrawLengthMm: tLen,
+        linePoints: working.chains.isNotEmpty
+            ? working.chains.last
+            : working.points,
+        scalePxPerMm: _k,
         measuredCornerCount: working.cornerCount,
+        measuredOpeningAreaM2: working.quantities['opening_area_m2'] ??
+            openings.fold<double>(0, (s, o) => s + o.areaM2),
+        autoCheckIronPlate: hasTLine,
+        ironPlateOnly: ironMeasured,
+        autoCheckReinforce: hasOpenings,
+        autoCheckAngle: hasOpenings,
+        reinforceBarCount: OpeningReinforceCalc.reinforceBarsForOpenings(
+          openings: reinforceOpenings,
+          stockLengthMm: stockLen,
+        ),
+        anglePieceCount: [
+          for (final o in openings)
+            OpeningReinforceCalc.anglePieces(
+              pattern: OpeningReinforcePatternX.parse(o.patternName),
+              magusaSegments: o.magusaSegments,
+            ),
+        ].fold<int>(0, (s, n) => s + n),
       ),
     );
     if (params == null || _measurement == null || !mounted) return;
 
-    final qty2 = _qtyForWall(
-      working,
-      method: params.method,
-      heightMm: params.heightMm,
+    final qty2 = Map<String, double>.from(
+      _qtyForWall(
+        working,
+        method: params.method,
+        heightMm: params.heightMm,
+        ironPlateRunMm: tLen,
+      ),
     );
+    if (ironMeasured && tLen > 0) {
+      qty2['wall_length_mm'] = tLen;
+    } else if (measureLen > 0) {
+      qty2['wall_length_mm'] = measureLen;
+    }
+    if (params.method.useIronPlate && tLen > 0) {
+      final seg =
+          params.method.ironPlateSegmentCount;
+      final runMm = tLen * seg;
+      final stock = params.method.ironPlateLengthMm;
+      qty2['iron_plate_measure_mm'] = tLen;
+      qty2['iron_plate_run_mm'] = runMm;
+      if (stock > 0) {
+        final sheets = (runMm / stock).ceilToDouble();
+        qty2['iron_plate_sheets'] = sheets < 1 ? 1.0 : sheets;
+      }
+    }
     final finalized = working.copyWith(
       heightMm: params.heightMm,
       method: params.method,
       quantities: qty2,
       estimateReady: true,
+      ironPlateMeasured: working.ironPlateMeasured || ironMeasured,
     );
     final walls2 = _measurement!.walls
         .map((w) => w.id == wallId ? finalized : w)
@@ -761,19 +1891,31 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => EstimateTableScreen(
-          title: '試算表',
+          title: Ms.of(context).estimate,
           initialLines: lines,
-          projectName: project?.name ?? measurement.name,
+          projectName: measurement.name,
           siteAddress: project?.address,
           sitePhone: project?.phone,
           siteContact: project?.contactName,
           areaLabel: '壁',
           areaM2: areas.lgsM2 > 0 ? areas.lgsM2 : null,
           lgsAreaM2: areas.lgsM2 > 0 ? areas.lgsM2 : null,
+          lgsMethodLabel: EstimateBuilder.lgsMethodLabel(
+            measurement,
+            areaKind: '壁',
+          ),
           boardAreaM2: areas.boardM2 > 0 ? areas.boardM2 : null,
+          boardAreaParts: EstimateBuilder.boardAreasByName(
+            measurement,
+            areaKind: '壁',
+          ),
           rockFeltM: areas.rockFeltM > 0 ? areas.rockFeltM : null,
           glassWoolM2: areas.glassWoolM2 > 0 ? areas.glassWoolM2 : null,
-          onSavePersist: (save) => _persistEstimateSave(save, showSnack: false),
+          onSavePersist: (save) => _persistEstimateSave(
+            save,
+            showSnack: false,
+            areaLabel: '壁',
+          ),
         ),
       ),
     );
@@ -782,19 +1924,72 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
   Future<void> _persistEstimateSave(
     EstimateSaveResult save, {
     bool showSnack = true,
+    String areaLabel = '壁',
   }) async {
     if (_measurement == null) return;
-    final m = save.kind == EstimateSheetKind.board
-        ? _measurement!.copyWith(boardEstimate: save.lines)
-        : _measurement!.copyWith(lgsEstimate: save.lines);
+    final ceiling = areaLabel == '天井';
+    final drop = areaLabel == '下り' || save.kind == EstimateSheetKind.drop;
+    for (final e in save.lines) {
+      if (e.areaKind.isEmpty) {
+        e.areaKind = drop
+            ? 'drop'
+            : save.kind == EstimateSheetKind.cross
+                ? 'cross'
+                : ceiling
+                    ? 'ceiling'
+                    : 'wall';
+      }
+    }
+    final Measurement m;
+    if (drop) {
+      m = _measurement!.copyWith(
+        dropEstimate: EstimateBuilder.mergeReplacingLineNumbersOfKind(
+          existing: _measurement!.dropEstimate,
+          incoming: save.lines,
+          kind: save.kind,
+        ),
+      );
+    } else {
+      m = switch (save.kind) {
+        EstimateSheetKind.board => ceiling
+            ? _measurement!.copyWith(
+                ceilingBoardEstimate: EstimateBuilder.mergeReplacingLineNumbers(
+                  existing: _measurement!.ceilingBoardEstimate,
+                  incoming: save.lines,
+                ),
+              )
+            : _measurement!.copyWith(boardEstimate: save.lines),
+        EstimateSheetKind.lgs => ceiling
+            ? _measurement!.copyWith(
+                ceilingLgsEstimate: EstimateBuilder.mergeReplacingLineNumbers(
+                  existing: _measurement!.ceilingLgsEstimate,
+                  incoming: save.lines,
+                ),
+              )
+            : _measurement!.copyWith(lgsEstimate: save.lines),
+        EstimateSheetKind.cross =>
+          _measurement!.copyWith(crossEstimate: save.lines),
+        EstimateSheetKind.drop =>
+          _measurement!.copyWith(dropEstimate: save.lines),
+      };
+    }
     await _persist(m);
     if (!mounted || !showSnack) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('${save.kind.label}を保存しました'),
+          content: Text(Ms.of(context).savedKind(
+            Ms.of(context).estimateKindTitle(save.kind.label),
+          )),
         duration: const Duration(seconds: 2),
       ),
     );
+  }
+
+  WallBadgeHit? _badgeAt(Offset local, {double radius = 28}) {
+    for (var i = _badgeHits.length - 1; i >= 0; i--) {
+      if (_badgeHits[i].hit(local, radius: radius)) return _badgeHits[i];
+    }
+    return null;
   }
 
   void _onPointerDown(Offset local) {
@@ -804,9 +1999,10 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
 
     if (_tool == CanvasTool.pan) return;
 
-    // 番号バッジ付近は描画開始しない
-    for (final b in _badgeHits) {
-      if (b.hit(local, radius: 28)) return;
+    // 番号バッジ付近は描画開始しない（上の T を優先）
+    if (_badgeAt(local) != null) return;
+    for (final b in _ceilingBadgeHits) {
+      if (b.hit(local)) return;
     }
 
     // 既存壁の近く＆ドラフト無し → 選択用（短押しは up）
@@ -819,8 +2015,9 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
 
     if (_tool == CanvasTool.wallPen ||
         _tool == CanvasTool.ceilingPen ||
+        _tool == CanvasTool.dropPen ||
         _tool == CanvasTool.openingReinforce) {
-      final tip = _tipFromFinger(local);
+      var tip = _tipFromFinger(local);
       setState(() {
         _touching = true;
         _selectedWallId = null;
@@ -853,11 +2050,12 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
     if (!_touching) return;
     if (_tool != CanvasTool.wallPen &&
         _tool != CanvasTool.ceilingPen &&
+        _tool != CanvasTool.dropPen &&
         _tool != CanvasTool.openingReinforce) {
       return;
     }
 
-    final tip = _tipFromFinger(local);
+    var tip = _tipFromFinger(local);
     setState(() {
       _mouseTip = tip;
     });
@@ -871,21 +2069,75 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
   }
 
   void _onPointerUp(Offset local) {
+    if (_openedNumberOnDown) {
+      _openedNumberOnDown = false;
+      _touching = false;
+      return;
+    }
     if (_longPressHandled) {
       _touching = false;
       return;
     }
 
-    // 番号バッジ → 材料寸法
+    // 番号バッジ → 材料寸法（重なるときは上の T）
     if (!_touching || (_wallPoints.isEmpty && !_startLocked)) {
-      for (final b in _badgeHits) {
-        if (b.hit(local, radius: 28)) {
+      final badge = _badgeAt(local);
+      if (badge != null) {
+        _holdTicker?.cancel();
+        setState(() {
+          _touching = false;
+          _mouseTip = null;
+        });
+        _openWallMaterial(badge.wallId);
+        return;
+      }
+      for (final b in _ceilingBadgeHits) {
+        if (b.hit(local)) {
           _holdTicker?.cancel();
           setState(() {
             _touching = false;
             _mouseTip = null;
+            _selectedCeilingId = b.ceilingId;
+            CeilingRegion? ceil;
+            for (final e in _measurement?.ceilings ?? const <CeilingRegion>[]) {
+              if (e.id == b.ceilingId) {
+                ceil = e;
+                break;
+              }
+            }
+            if (ceil?.highlightArgb != null) {
+              _drawColorArgb = ceil!.highlightArgb!;
+            }
           });
-          _openWallMaterial(b.wallId);
+          _openCeilingParams(b.ceilingId);
+          return;
+        }
+      }
+      for (final d in _measurement?.drops ?? const <DropRegion>[]) {
+        if (_hitDrop(d, local)) {
+          _holdTicker?.cancel();
+          setState(() {
+            _touching = false;
+            _mouseTip = null;
+            _selectedDropId = d.id;
+            if (d.highlightArgb != null) {
+              _drawColorArgb = d.highlightArgb!;
+            }
+          });
+          // 設定は線尾番号タップ（ドラッグ測定中でないとき）
+          return;
+        }
+      }
+      // 開口マーカー → 再設定／削除
+      for (final h in _openingHits) {
+        if (h.hit(local)) {
+          _holdTicker?.cancel();
+          setState(() {
+            _touching = false;
+            _mouseTip = null;
+            _openingDraft.clear();
+          });
+          _editOpening(h.openingId);
           return;
         }
       }
@@ -942,6 +2194,13 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
 
     if (_tool == CanvasTool.ceilingPen && _touching) {
       final wasReady = _mouseReady;
+      final n = _ceilingDraft.length;
+      final tip = _mouseTip;
+      final closedByTip = tip != null &&
+          n >= 3 &&
+          (tip - _ceilingDraft.first).distance <= 40;
+      final closedByLast = n >= 3 &&
+          (_ceilingDraft.last - _ceilingDraft.first).distance <= 48;
       _holdTicker?.cancel();
       setState(() {
         _touching = false;
@@ -949,8 +2208,39 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
         _mouseReady = false;
         _holdProgress = 0;
       });
-      if (wasReady && _ceilingDraft.length >= 3) {
-        _confirmCeiling();
+      // 始点へ戻して閉合した場合のみ確定（番号表示→工法）
+      if (wasReady && n >= 3 && (closedByTip || closedByLast)) {
+        _confirmCeiling(requireClosed: false);
+      } else if (wasReady && n >= 3) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(Ms.of(context).returnToStartRingShort),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+
+    if (_tool == CanvasTool.dropPen && _touching) {
+      final wasReady = _mouseReady;
+      final n = _dropDraft.length;
+      _holdTicker?.cancel();
+      setState(() {
+        _touching = false;
+        // 緑のまま離したら測定完了（3点以上）／不足なら次点待ち
+        if (!wasReady) {
+          _mouseTip = null;
+          _holdProgress = 0;
+        }
+      });
+      if (wasReady && n >= 3) {
+        _finishDropFromMouse();
+      } else if (wasReady && n >= 1) {
+        setState(() {
+          _mouseReady = false;
+          _mouseTip = null;
+          _holdProgress = 0;
+        });
       }
     }
 
@@ -983,18 +2273,179 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
         .toList();
   }
 
+  /// この壁の開口。未紐付けしか無いときは測定全体を使う（自動チェック用）
+  List<WallOpening> _effectiveOpeningsForWall(String wallId) {
+    final linked = _openingsForWall(wallId);
+    if (linked.isNotEmpty) return linked;
+    final all = _measurement?.openings ?? const <WallOpening>[];
+    if (all.isEmpty) return const [];
+    final unlinked = all
+        .where((o) => o.wallId == null || o.wallId!.isEmpty)
+        .toList();
+    if (unlinked.isNotEmpty) return unlinked;
+    if ((_measurement?.walls.length ?? 0) <= 1) return List.of(all);
+    return const [];
+  }
+
+  bool _isIronWall(WallSegment wall) => wall.isIronDrawLine;
+
+  /// 図上の T 線の全長。材料選択の鉄板欄はこれだけを使う（壁長は使わない）
+  double _tIronLengthMm([WallSegment? prefer]) {
+    if (prefer != null && prefer.isIronDrawLine) {
+      return ironPlateLengthMm(prefer, _k);
+    }
+    var sum = 0.0;
+    for (final w in _measurement?.walls ?? const <WallSegment>[]) {
+      if (!w.isIronDrawLine) continue;
+      sum += ironPlateLengthMm(w, _k);
+    }
+    return sum;
+  }
+
+  /// 鉄板の画線全長（T 横の数字・材料選択と同じ式）
+  double _ironTotalMm(
+    WallSegment wall, [
+    ({double tipMm, double runMm})? painted,
+  ]) {
+    final run = ironPlateLengthMm(wall, _k);
+    if (run > 0) return run;
+    final p = painted ?? _paintedMm(wall);
+    if (p.runMm > 0) return p.runMm;
+    return p.tipMm;
+  }
+
+  /// 線上の黄色い長さラベルと同じ計算（8px未満はラベルも出さないので除外）
+  ({double tipMm, double runMm}) _paintedMmOfPoints(List<Point2> pts) {
+    var tip = 0.0;
+    var run = 0.0;
+    for (var i = 0; i < pts.length - 1; i++) {
+      final mm = distanceLabelMm(
+        Offset(pts[i].x, pts[i].y),
+        Offset(pts[i + 1].x, pts[i + 1].y),
+        _k,
+      );
+      if (mm <= 0) continue;
+      run += mm;
+      tip = mm;
+    }
+    return (tipMm: tip, runMm: run);
+  }
+
+  ({double tipMm, double runMm}) _paintedMm(WallSegment wall) {
+    var tip = 0.0;
+    var run = 0.0;
+    final chains = wall.chains.isNotEmpty ? wall.chains : [wall.points];
+    for (final chain in chains) {
+      final part = _paintedMmOfPoints(chain);
+      if (part.runMm <= 0) continue;
+      run += part.runMm;
+      tip = part.tipMm;
+    }
+    if (run > 0) return (tipMm: tip, runMm: run);
+    final stored = wall.quantities['iron_plate_measure_mm'] ??
+        wall.quantities['wall_length_mm'] ??
+        0;
+    return (tipMm: stored, runMm: stored);
+  }
+
+  double _lineLengthMm(WallSegment wall) => _paintedMm(wall).runMm;
+
+  double _paintedWallLengthMm(WallSegment wall) => _paintedMm(wall).runMm;
+
+  double _measuredWallLengthMm(WallSegment wall) => _paintedMm(wall).runMm;
+
+  Future<void> _applyWallBasicResult(
+    WallSegment wall,
+    WallMaterialResult result, {
+    bool drawnAsIron = false,
+  }) async {
+    if (_measurement == null) return;
+    final painted = _paintedMm(wall);
+    final qty = Map<String, double>.from(
+      _qtyForWall(
+        wall,
+        method: result.method,
+        heightMm: result.heightMm,
+      ),
+    );
+    final ironDraw = drawnAsIron || wall.isIronDrawLine;
+    if (painted.runMm > 0 || (ironDraw && _ironTotalMm(wall, painted) > 0)) {
+      final ironLen = _tIronLengthMm(ironDraw ? wall : null);
+      qty['wall_length_mm'] = ironDraw && ironLen > 0 ? ironLen : painted.runMm;
+      if (ironDraw && ironLen > 0) {
+        qty['iron_plate_measure_mm'] = ironLen;
+        qty['iron_plate_draw'] = 1;
+      }
+    }
+    final method = ironDraw
+        ? result.method.copyWith(useIronPlate: true)
+        : result.method;
+    final working = wall.copyWith(
+      method: method,
+      heightMm: result.heightMm,
+      quantities: qty,
+      ironPlateMeasured: wall.ironPlateMeasured || drawnAsIron,
+    );
+    final walls = _measurement!.walls
+        .map((w) => w.id == wall.id ? working : w)
+        .toList();
+    await _persist(_measurement!.copyWith(walls: walls));
+  }
+
+  Future<void> _openCrossDedicatedForWall(String wallId) async {
+    final wall = _wallById(wallId);
+    if (wall == null || !mounted) return;
+    final len = _paintedMm(wall).runMm;
+    final h = wall.heightMm > 0 ? wall.heightMm : 2700;
+    final openings = _effectiveOpeningsForWall(wallId);
+    final openingArea = openings.fold<double>(0, (s, o) => s + o.areaM2);
+    final gross = (len / 1000.0) * (h / 1000.0);
+    final area = (gross - openingArea).clamp(0.0, double.infinity);
+    final config = await Navigator.of(context, rootNavigator: true)
+        .push<CrossDedicatedConfig>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => CrossDedicatedSheet(
+          areaM2: area,
+          initial: wall.method.crossDedicated,
+          title: Ms.of(context).crossDedicatedWall,
+          showWallFaces: true,
+          onSavePersist: (save) =>
+              _persistEstimateSave(save, showSnack: false),
+          projectName: _measurement?.name,
+        ),
+      ),
+    );
+    if (config == null || _measurement == null || !mounted) return;
+    final latest = _wallById(wallId);
+    if (latest == null) return;
+    final method = latest.method.copyWith(
+      useCross: config.enabled,
+      crossDedicated: config,
+    );
+    final walls = _measurement!.walls
+        .map((w) => w.id == wallId ? latest.copyWith(method: method) : w)
+        .toList();
+    await _persist(_measurement!.copyWith(walls: walls));
+  }
+
   Map<String, double> _qtyForWall(
     WallSegment wall, {
     WallMethod? method,
     double? heightMm,
+    double? ironPlateRunMm,
   }) {
+    final m = method ?? wall.method;
+    final ironRun = ironPlateRunMm ??
+        (wall.isIronDrawLine ? _tIronLengthMm(wall) : _tIronLengthMm());
     return CalcEngine.calcWall(
       points: wall.points,
       chainStarts: wall.chainStarts,
       heightMm: heightMm ?? wall.heightMm,
       scalePxPerMm: _k,
-      method: method ?? wall.method,
+      method: m,
       openings: _openingsForWall(wall.id),
+      ironPlateRunMm: m.useIronPlate && ironRun > 0 ? ironRun : null,
     );
   }
 
@@ -1011,6 +2462,26 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
       _mouseReady = false;
       _holdProgress = 0;
     });
+    if (!FeatureAccess.hasFullAccess(context.read<AppState>().user)) {
+      final opening = WallOpening(
+        id: context.read<AppState>().newId(),
+        a: Point2(a.x, a.y),
+        b: Point2(b.x, b.y),
+        highlightArgb: _drawColorArgb,
+        markerSize: _strokeWidth.clamp(8, 56),
+        heightMm: 2100,
+        widthMm: widthMm > 50 ? widthMm : 900,
+      );
+      final nextOpenings = [..._measurement!.openings, opening];
+      await _relinkOpeningsAndRecalcWalls(nextOpenings);
+      if (!mounted) return;
+      setState(() {
+        _openingDraft.clear();
+        _openingSetupDone = true;
+        _tool = CanvasTool.pan;
+      });
+      return;
+    }
     final result = await showModalBottomSheet<OpeningReinforceResult>(
       context: context,
       isScrollControlled: true,
@@ -1019,7 +2490,7 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
       ),
     );
     if (!mounted) return;
-    if (result == null) {
+    if (result == null || result.delete) {
       setState(() => _openingDraft.clear());
       return;
     }
@@ -1035,38 +2506,237 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
       widthMm: result.widthMm,
       magusaSegments: result.magusaSegments,
     );
-    await _persist(
-      _measurement!.copyWith(
-        openings: [..._measurement!.openings, opening],
-      ),
-    );
+    final nextOpenings = [..._measurement!.openings, opening];
+    await _relinkOpeningsAndRecalcWalls(nextOpenings);
     if (!mounted) return;
     setState(() {
       _openingDraft.clear();
       _openingSetupDone = true;
+      _tool = CanvasTool.pan;
     });
+    final linked = (_measurement?.openings ?? const [])
+        .where((o) => o.id == opening.id && o.wallId != null)
+        .isNotEmpty;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          '開口補強を追加（${result.pattern.label}／${result.material.label}）'
-          '。続けて追加するか、壁マウスで画線',
+          linked
+              ? Ms.of(context).openingAddedDeduct(opening.areaM2.toStringAsFixed(2))
+              : Ms.of(context).openingAdded(
+                  result.pattern.label,
+                  result.material.label,
+                ),
         ),
         duration: const Duration(seconds: 3),
       ),
     );
   }
 
+  Future<void> _editOpening(String openingId) async {
+    if (_measurement == null) return;
+    WallOpening? opening;
+    for (final o in _measurement!.openings) {
+      if (o.id == openingId) {
+        opening = o;
+        break;
+      }
+    }
+    if (opening == null) return;
+    if (!FeatureAccess.hasFullAccess(context.read<AppState>().user)) {
+      final delete = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(S.of(ctx).upgradeTitle),
+          content: Text(
+            '${S.of(ctx).upgradeMessage}\n\n${Ms.of(ctx).freeDeleteOpeningNote}',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(S.of(ctx).close),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(Ms.of(ctx).deleteThisOpening),
+            ),
+          ],
+        ),
+      );
+      if (delete == true && _measurement != null) {
+        final next =
+            _measurement!.openings.where((o) => o.id != openingId).toList();
+        await _relinkOpeningsAndRecalcWalls(next);
+      }
+      return;
+    }
+
+    double stock = 3000;
+    if (opening.wallId != null) {
+      final wall = _wallById(opening.wallId!);
+      if (wall != null) {
+        final m = wall.method;
+        stock = m.reinforceLengthMm > 0
+            ? m.reinforceLengthMm
+            : (m.studLengthMm > 0 ? m.studLengthMm : wall.heightMm);
+      }
+    }
+
+    final result = await showModalBottomSheet<OpeningReinforceResult>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => OpeningReinforceSheet(
+        defaultWidthMm: opening!.widthMm,
+        defaultHeightMm: opening.heightMm,
+        initialPattern: OpeningReinforcePatternX.parse(opening.patternName),
+        initialMaterial: opening.material,
+        initialMagusaSegments: opening.magusaSegments,
+        allowDelete: true,
+        stockLengthMm: stock,
+      ),
+    );
+    if (!mounted || result == null || _measurement == null) return;
+
+    if (result.delete) {
+      final openings =
+          _measurement!.openings.where((o) => o.id != openingId).toList();
+      var walls = _measurement!.walls;
+      final wid = opening.wallId;
+      if (wid != null) {
+        walls = [
+          for (final w in walls)
+            if (w.id == wid)
+              w.copyWith(
+                quantities: CalcEngine.calcWall(
+                  points: w.points,
+                  chainStarts: w.chainStarts,
+                  heightMm: w.heightMm,
+                  scalePxPerMm: _k,
+                  method: w.method,
+                  openings: openings.where((o) => o.wallId == wid).toList(),
+                ),
+              )
+            else
+              w,
+        ];
+      }
+      await _persist(
+        _measurement!.copyWith(openings: openings, walls: walls),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(Ms.of(context).openingDeleted)),
+      );
+      return;
+    }
+
+    final updated = opening.copyWith(
+      patternName: result.pattern.name,
+      material: result.material,
+      heightMm: result.heightMm,
+      widthMm: result.widthMm,
+      magusaSegments: result.magusaSegments,
+    );
+    final openings = _measurement!.openings
+        .map((o) => o.id == openingId ? updated : o)
+        .toList();
+    if (updated.wallId == null || updated.wallId!.isEmpty) {
+      await _relinkOpeningsAndRecalcWalls(openings);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(Ms.of(context).openingUpdated(result.pattern.label))),
+      );
+      return;
+    }
+    var walls = _measurement!.walls;
+    final wid = updated.wallId!;
+    final hasReinforce = openings.any(
+      (o) =>
+          o.wallId == wid && o.material == OpeningMaterialKind.reinforce,
+    );
+    walls = [
+      for (final w in walls)
+        if (w.id == wid)
+          () {
+            var method = w.method;
+            if (hasReinforce && !method.useReinforceMaterial) {
+              method = method.copyWith(
+                useReinforceMaterial: true,
+                reinforceWidthMm: method.reinforceWidthMm > 0
+                    ? method.reinforceWidthMm
+                    : method.studWidthMm,
+                reinforceLengthMm: method.reinforceLengthMm > 0
+                    ? method.reinforceLengthMm
+                    : (method.studLengthMm > 0
+                        ? method.studLengthMm
+                        : w.heightMm),
+              );
+            }
+            return w.copyWith(
+              method: method,
+              quantities: CalcEngine.calcWall(
+                points: w.points,
+                chainStarts: w.chainStarts,
+                heightMm: w.heightMm,
+                scalePxPerMm: _k,
+                method: method,
+                openings: openings.where((o) => o.wallId == wid).toList(),
+              ),
+            );
+          }()
+        else
+          w,
+    ];
+    await _persist(
+      _measurement!.copyWith(openings: openings, walls: walls),
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(Ms.of(context).openingUpdated(result.pattern.label)),
+      ),
+    );
+  }
+
+  /// 番号タップ時：この壁へ開口を割り当てる
+  bool _attachOpeningsToWall(WallSegment wall) {
+    if (_measurement == null) return false;
+    final wallIds = {for (final w in _measurement!.walls) w.id};
+    final onlyWall = _measurement!.walls.length == 1;
+    var changed = false;
+    final next = _measurement!.openings.map((o) {
+      if (o.wallId == wall.id) return o;
+      final taken = o.wallId != null &&
+          o.wallId!.isNotEmpty &&
+          wallIds.contains(o.wallId);
+      final near = OpeningReinforceCalc.openingNearWall(
+        opening: o,
+        wall: wall,
+        maxDistPx: 400,
+      );
+      if (onlyWall || !taken || near) {
+        changed = true;
+        return o.copyWith(wallId: wall.id);
+      }
+      return o;
+    }).toList();
+    if (!changed) return false;
+    _measurement = _measurement!.copyWith(openings: next);
+    return true;
+  }
+
   /// 画線が開口マーカー付近を通ったら紐付け
   List<WallOpening> _linkOpeningsToWall(
     List<WallOpening> openings,
-    WallSegment wall,
-  ) {
+    WallSegment wall, {
+    double? maxDistPx,
+  }) {
+    final thresh = maxDistPx ?? math.max(64.0, wall.strokeWidth * 4);
     return openings.map((o) {
       if (o.wallId != null && o.wallId!.isNotEmpty) return o;
       if (OpeningReinforceCalc.openingNearWall(
         opening: o,
         wall: wall,
-        maxDistPx: math.max(48, wall.strokeWidth * 3),
+        maxDistPx: thresh,
       )) {
         return o.copyWith(wallId: wall.id);
       }
@@ -1074,16 +2744,65 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
     }).toList();
   }
 
+  /// 未紐付け開口を既存壁へ割り当て、該当壁の面積を再計算
+  Future<void> _relinkOpeningsAndRecalcWalls(
+    List<WallOpening> openings,
+  ) async {
+    if (_measurement == null) return;
+    var nextOpenings = openings;
+    for (final w in _measurement!.walls) {
+      nextOpenings = _linkOpeningsToWall(nextOpenings, w);
+    }
+    final touched = <String>{
+      for (final o in nextOpenings)
+        if (o.wallId != null && o.wallId!.isNotEmpty) o.wallId!,
+    };
+    final walls = [
+      for (final w in _measurement!.walls)
+        if (touched.contains(w.id))
+          w.copyWith(
+            quantities: CalcEngine.calcWall(
+              points: w.points,
+              chainStarts: w.chainStarts,
+              heightMm: w.heightMm,
+              scalePxPerMm: _k,
+              method: w.method,
+              openings: nextOpenings.where((o) => o.wallId == w.id).toList(),
+            ),
+          )
+        else
+          w,
+    ];
+    await _persist(
+      _measurement!.copyWith(walls: walls, openings: nextOpenings),
+    );
+  }
+
+  bool get _isLandscape =>
+      MediaQuery.orientationOf(context) == Orientation.landscape;
+
+  bool get _hideMeasureChrome => _chromeCollapsed && _isLandscape;
+
+  void _collapseChromeIfLandscape() {
+    if (!mounted) return;
+    if (MediaQuery.orientationOf(context) != Orientation.landscape) return;
+    if (_chromeCollapsed) return;
+    setState(() => _chromeCollapsed = true);
+  }
+
   @override
   Widget build(BuildContext context) {
     final m = _measurement;
+    final hideChrome = _hideMeasureChrome;
     return Scaffold(
-      appBar: AppBar(
-        title: Text(m?.name ?? '測定'),
+      appBar: hideChrome
+          ? null
+          : AppBar(
+        title: Text(m?.name ?? Ms.of(context).measure),
         actions: [
           IconButton(
-            tooltip: _snapEnabled ? '吸着ON' : '吸着OFF',
-            onPressed: () => setState(() => _snapEnabled = !_snapEnabled),
+            tooltip: _snapEnabled ? Ms.of(context).snapOn : Ms.of(context).snapOff,
+            onPressed: _toggleSnap,
             icon: Icon(
               _snapEnabled ? Icons.center_focus_strong : Icons.center_focus_weak,
               color: _snapEnabled ? AppTheme.safetyYellow : Colors.white70,
@@ -1091,7 +2810,7 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
           ),
           if (m != null && m.ceilings.isNotEmpty)
             IconButton(
-              tooltip: '天井グリッド90°回転',
+              tooltip: Ms.of(context).rotateCeilGrid,
               onPressed: () => _rotateCeilingGrid(m.ceilings.last),
               icon: const Icon(Icons.rotate_90_degrees_ccw),
             ),
@@ -1101,7 +2820,8 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
-                _toolbar(),
+                if (!hideChrome) _toolbar(),
+                if (!hideChrome)
                 WallHighlightColorBar(
                   selectedArgb: _drawColorArgb,
                   strokeWidth: _selectedWallId != null
@@ -1109,7 +2829,6 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                           _strokeWidth)
                       : _strokeWidth,
                   onSelect: (c) {
-                    // 線色は「これから描く線」専用。既存線の色は変えない
                     setState(() => _drawColorArgb = c);
                   },
                   onStrokeWidth: (w) {
@@ -1120,10 +2839,71 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                     }
                   },
                 ),
-                Expanded(child: _canvas()),
-                _bottomBar(),
+                Expanded(
+                  child: hideChrome
+                      ? Stack(
+                          children: [
+                            Positioned.fill(child: _canvas()),
+                            _expandChromeButton(),
+                          ],
+                        )
+                      : _canvas(),
+                ),
+                if (!hideChrome) _bottomBar(),
               ],
             ),
+    );
+  }
+
+  Widget _expandChromeButton() {
+    final top = MediaQuery.paddingOf(context).top;
+    return Positioned(
+      top: top + 8,
+      left: 8,
+      right: 8,
+      child: Row(
+        children: [
+          Material(
+            color: AppTheme.navy.withValues(alpha: 0.88),
+            shape: const CircleBorder(),
+            child: IconButton(
+              tooltip: Ms.of(context).back,
+              onPressed: () => Navigator.of(context).maybePop(),
+              icon: const Icon(Icons.arrow_back, color: Colors.white, size: 20),
+            ),
+          ),
+          const Spacer(),
+          Material(
+            color: AppTheme.navy.withValues(alpha: 0.92),
+            borderRadius: BorderRadius.circular(22),
+            elevation: 3,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(22),
+              onTap: () => setState(() => _chromeCollapsed = false),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.keyboard_arrow_down, color: Colors.white),
+                    const SizedBox(width: 4),
+                    Text(
+                      Ms.of(context).menu,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const Spacer(),
+          const SizedBox(width: 48),
+        ],
+      ),
     );
   }
 
@@ -1147,23 +2927,20 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
               final go = await showDialog<String>(
                 context: context,
                 builder: (ctx) => AlertDialog(
-                  title: const Text('開口補強の確認'),
-                  content: const Text(
-                    '壁マウスの前に開口補強を設定してください。\n'
-                    '開口がない場合は「開口なし」で続行できます。',
-                  ),
+                  title: Text(Ms.of(ctx).openingConfirmTitle),
+                  content: Text(Ms.of(ctx).openingConfirmBody),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(ctx, 'cancel'),
-                      child: const Text('キャンセル'),
+                      child: Text(S.of(ctx).cancel),
                     ),
                     TextButton(
                       onPressed: () => Navigator.pop(ctx, 'opening'),
-                      child: const Text('開口補強へ'),
+                      child: Text(Ms.of(ctx).goOpening),
                     ),
                     ElevatedButton(
                       onPressed: () => Navigator.pop(ctx, 'skip'),
-                      child: const Text('開口なし'),
+                      child: Text(Ms.of(ctx).noOpening),
                     ),
                   ],
                 ),
@@ -1176,6 +2953,7 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                   _openingDraft.clear();
                   _clearWallDraft(notify: false);
                 });
+                _collapseChromeIfLandscape();
                 return;
               }
               _openingSetupDone = true;
@@ -1185,7 +2963,7 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
             setState(() {
               _tool = CanvasTool.wallPen;
               _wallDrawMode = mode;
-              if (mode == WallDrawMode.single) {
+              if (mode != WallDrawMode.multi) {
                 _continueWallId = null;
               }
               _clearWallDraft(notify: false);
@@ -1193,15 +2971,20 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
             });
             if (mode == WallDrawMode.multi && mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text(
-                    '多線モード：壁高さ・工法は同一に。'
-                    '画線後に番号が最新線尾へ移動します',
-                  ),
-                  duration: Duration(seconds: 3),
+                SnackBar(
+                  content: Text(Ms.of(context).multiModeSnack),
+                  duration: const Duration(seconds: 3),
+                ),
+              );
+            } else if (mode == WallDrawMode.ironPlate && mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(Ms.of(context).ironModeSnack),
+                  duration: const Duration(seconds: 3),
                 ),
               );
             }
+            _collapseChromeIfLandscape();
             return;
           }
           if (tool == CanvasTool.openingReinforce) {
@@ -1212,14 +2995,23 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
               _openingDraft.clear();
               _continueWallId = null;
             });
+            _collapseChromeIfLandscape();
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                  '開口補強：線色を選び、開口の両端を各1.5秒で確定',
-                ),
-                duration: Duration(seconds: 3),
+              SnackBar(
+                content: Text(Ms.of(context).openingModeSnack),
+                duration: const Duration(seconds: 3),
               ),
             );
+            return;
+          }
+          if (tool == CanvasTool.ceilingPen) {
+            await _activateCeilingPen();
+            _collapseChromeIfLandscape();
+            return;
+          }
+          if (tool == CanvasTool.dropPen) {
+            await _activateDropPen();
+            _collapseChromeIfLandscape();
             return;
           }
           setState(() {
@@ -1227,21 +3019,34 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
             if (tool == CanvasTool.pan) {
               _clearWallDraft(notify: false);
               _openingDraft.clear();
+              _dropDraft.clear();
+              _dropDraftTurnWidths.clear();
+              _clearDropSecWidthMode();
             }
             if (tool != CanvasTool.wallPen) {
               _continueWallId = null;
             }
+            if (tool != CanvasTool.dropPen) {
+              _clearDropSecWidthMode();
+              _dropDraftTurnWidths.clear();
+            }
           });
+          _collapseChromeIfLandscape();
         },
         selectedColor: AppTheme.safetyYellow,
       );
     }
 
+    final ms = Ms.of(context);
     final modeHint = _tool == CanvasTool.openingReinforce
-        ? '［開口補強］'
-        : _tool != CanvasTool.wallPen
-            ? ''
-            : (_wallDrawMode == WallDrawMode.multi ? '［多線］' : '［単線］');
+        ? ms.modeOpening
+        : _tool == CanvasTool.dropPen
+            ? ms.modeDrop
+            : _tool != CanvasTool.wallPen
+                ? ''
+                : (_wallDrawMode == WallDrawMode.ironPlate
+                    ? ms.modeIron
+                    : (_wallDrawMode == WallDrawMode.multi ? ms.modeMulti : ms.modeSingle));
 
     return Container(
       color: Colors.white,
@@ -1250,28 +3055,32 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
-            chip('移動', CanvasTool.pan, const Icon(Icons.open_with, size: 16)),
+            chip(ms.toolPan, CanvasTool.pan, const Icon(Icons.open_with, size: 16)),
             const SizedBox(width: 6),
             chip(
-              '開口補強',
+              ms.toolOpening,
               CanvasTool.openingReinforce,
               const Icon(Icons.crop_square, size: 16),
             ),
             const SizedBox(width: 6),
-            chip('壁マウス', CanvasTool.wallPen, const MouseToolIcon(size: 14)),
+            chip(ms.toolWall, CanvasTool.wallPen, const MouseToolIcon(size: 14)),
             const SizedBox(width: 6),
-            chip('天井マウス', CanvasTool.ceilingPen, const MouseToolIcon(size: 14)),
+            chip(ms.toolCeil, CanvasTool.ceilingPen, const MouseToolIcon(size: 14)),
+            const SizedBox(width: 6),
+            chip(ms.toolDrop, CanvasTool.dropPen, const MouseToolIcon(size: 14)),
             const SizedBox(width: 10),
             Text(
               _touching
-                  ? (_mouseReady
-                      ? '緑：離すと完了／移動で次点'
-                      : '赤：1.5秒停頓で緑に')
-                  : (modeHint == '［開口補強］'
-                      ? '開口の両端を確定→形状・材料を選択'
-                      : (modeHint.isEmpty
-                          ? '画完→線尾に番号表示。番号タップで工法選択／削除'
-                          : '$modeHint 画完→線尾番号。番号タップで工法選択／削除')),
+                  ? (_mouseReady ? ms.hintGreenNext : ms.hintRedHold)
+                  : (modeHint.isEmpty
+                      ? ms.hintDefault
+                      : modeHint == ms.modeOpening
+                          ? ms.hintOpening
+                          : modeHint == ms.modeDrop
+                              ? ms.hintDrop
+                              : (_tool == CanvasTool.ceilingPen
+                                  ? ms.ceilHint(_ceilingGroupNumber)
+                                  : ms.hintModeDraw(modeHint))),
               style: const TextStyle(fontSize: 12, color: AppTheme.steel),
             ),
           ],
@@ -1291,63 +3100,266 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
               boundaryMargin: const EdgeInsets.all(double.infinity),
               minScale: 0.05,
               maxScale: 20,
-              panEnabled: _tool == CanvasTool.pan || !_touching,
-              scaleEnabled: true,
+              panEnabled: !_touching && !_dropSecWidthMode,
+              scaleEnabled: !_dropSecWidthMode,
               child: SizedBox(
                 width: _imageSize.width,
                 height: _imageSize.height,
                 child: Listener(
                   onPointerDown: (e) {
+                    _openedNumberOnDown = false;
+                    // 天井／壁／下り／開口の番号は移動モードでもタップ可
+                    for (final b in _ceilingBadgeHits) {
+                      if (b.hit(e.localPosition)) {
+                        _holdTicker?.cancel();
+                        setState(() {
+                          _touching = false;
+                          _mouseTip = null;
+                          _selectedCeilingId = b.ceilingId;
+                          for (final ceil in
+                              _measurement?.ceilings ?? const <CeilingRegion>[]) {
+                            if (ceil.id == b.ceilingId &&
+                                ceil.highlightArgb != null) {
+                              _drawColorArgb = ceil.highlightArgb!;
+                              break;
+                            }
+                          }
+                        });
+                        _openedNumberOnDown = true;
+                        _openCeilingParams(b.ceilingId);
+                        return;
+                      }
+                    }
+                    final wallBadge = _badgeAt(e.localPosition);
+                    if (wallBadge != null) {
+                      _holdTicker?.cancel();
+                      setState(() {
+                        _touching = false;
+                        _mouseTip = null;
+                      });
+                      _openedNumberOnDown = true;
+                      _openWallMaterial(wallBadge.wallId);
+                      return;
+                    }
+                    for (final b in _dropBadgeHits) {
+                      if (b.hit(e.localPosition, radius: 28)) {
+                        _holdTicker?.cancel();
+                        setState(() {
+                          _touching = false;
+                          _mouseTip = null;
+                          _selectedDropId = b.dropId;
+                          for (final d
+                              in _measurement?.drops ?? const <DropRegion>[]) {
+                            if (d.id == b.dropId && d.highlightArgb != null) {
+                              _drawColorArgb = d.highlightArgb!;
+                              break;
+                            }
+                          }
+                        });
+                        _openedNumberOnDown = true;
+                        _editDrop(b.dropId);
+                        return;
+                      }
+                    }
+                    for (final h in _openingHits) {
+                      if (h.hit(e.localPosition)) {
+                        _holdTicker?.cancel();
+                        setState(() {
+                          _touching = false;
+                          _mouseTip = null;
+                          _openingDraft.clear();
+                        });
+                        _openedNumberOnDown = true;
+                        _editOpening(h.openingId);
+                        return;
+                      }
+                    }
+                    for (final h in _dropWidthPlusHits) {
+                      if (h.hit(e.localPosition, radius: 22)) {
+                        _holdTicker?.cancel();
+                        _startDropSecondWidthMeasure(h);
+                        return;
+                      }
+                    }
+                    if (_dropSecWidthMode) {
+                      _onPointerDownSecWidth(e.localPosition);
+                      return;
+                    }
                     if (_tool == CanvasTool.pan) return;
                     _onPointerDown(e.localPosition);
                   },
                   onPointerMove: (e) {
+                    if (_dropSecWidthMode) {
+                      _onPointerMoveSecWidth(e.localPosition);
+                      return;
+                    }
                     if (_tool == CanvasTool.pan) return;
                     _onPointerMove(e.localPosition);
                   },
                   onPointerUp: (e) {
+                    if (_dropSecWidthMode) {
+                      _onPointerUpSecWidth(e.localPosition);
+                      return;
+                    }
+                    if (_tool == CanvasTool.pan) return;
                     _onPointerUp(e.localPosition);
                   },
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
                       RawImage(image: _bgImage, fit: BoxFit.fill),
-                      CustomPaint(
-                        painter: OverlayMidPainter(
-                          snapLines:
-                              _snapEnabled ? _snapLines : const [],
-                          ceilings: _measurement!.ceilings,
-                          ceilingDraft: _ceilingDraft,
-                          scalePxPerMm: _k,
-                          wallDraft: [
-                            ..._wallPoints,
-                            if (_touching &&
-                                _mouseTip != null &&
-                                !_mouseReady)
-                              _mouseTip!,
-                          ],
-                        ),
-                      ),
-                      CustomPaint(
-                        painter: OverlayTopPainter(
-                          walls: _measurement!.walls,
-                          ceilings: _measurement!.ceilings,
-                          openings: _measurement!.openings,
-                          openingDraft: [
-                            ..._openingDraft,
-                            if (_tool == CanvasTool.openingReinforce &&
-                                _touching &&
-                                _mouseTip != null &&
-                                !_mouseReady &&
-                                _openingDraft.length < 2)
-                              _mouseTip!,
-                          ],
-                          openingDraftArgb: _drawColorArgb,
-                          openingDraftMarkerSize: _strokeWidth,
-                          scalePxPerMm: _k,
-                          selectedWallId: _selectedWallId,
-                          badgeHits: _badgeHits,
-                        ),
+                      AnimatedBuilder(
+                        animation: _transform,
+                        builder: (context, _) {
+                          final vs = _viewScale;
+                          final inv = 1.0 / vs.clamp(0.35, 5.0);
+                          final ceilings = _measurement!.ceilings;
+                          _ceilingBadgeHits.clear();
+                          final badgeOverlays = <Widget>[];
+                          for (var i = 0; i < ceilings.length; i++) {
+                            final c = ceilings[i];
+                            if (c.points.length < 3) continue;
+                            var sx = 0.0, sy = 0.0;
+                            for (final p in c.points) {
+                              sx += p.x;
+                              sy += p.y;
+                            }
+                            final cx = sx / c.points.length;
+                            final cy = sy / c.points.length;
+                            final areaM2 = (c.quantities['ceiling_area_m2'] ??
+                                    CalcEngine.polygonAreaMm2(c.points, _k) /
+                                        1e6)
+                                .toDouble();
+                            if (areaM2 <= 0) continue;
+                            final n =
+                                c.groupNumber <= 0 ? (i + 1) : c.groupNumber;
+                            final areaText = areaM2 >= 10
+                                ? '${areaM2.toStringAsFixed(1)} ㎡'
+                                : '${areaM2.toStringAsFixed(2)} ㎡';
+                            final hitR = 28.0 * inv;
+                            _ceilingBadgeHits.add(
+                              CeilingBadgeHit(
+                                ceilingId: c.id,
+                                center: Offset(cx, cy),
+                                number: n,
+                                radius: hitR,
+                              ),
+                            );
+                            badgeOverlays.add(
+                              Positioned(
+                                left: cx,
+                                top: cy,
+                                child: Transform.translate(
+                                  offset: Offset(-52 * inv, -16 * inv),
+                                  child: Transform.scale(
+                                    scale: inv,
+                                    alignment: Alignment.topLeft,
+                                    child: _CeilingNumberAreaChip(
+                                      number: n,
+                                      areaText: areaText,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+                          return Stack(
+                            fit: StackFit.expand,
+                            clipBehavior: Clip.none,
+                            children: [
+                              CustomPaint(
+                                painter: OverlayMidPainter(
+                                  snapLines: _snapEnabled
+                                      ? _snapLines
+                                      : const [],
+                                  ceilings: ceilings,
+                                  ceilingDraft: [
+                                    ..._ceilingDraft,
+                                    if (_tool == CanvasTool.ceilingPen &&
+                                        _touching &&
+                                        _mouseTip != null &&
+                                        !_mouseReady)
+                                      _mouseTip!,
+                                  ],
+                                  drops: _measurement?.drops ?? const [],
+                                  dropDraft: [
+                                    ..._dropDraft,
+                                    if (_tool == CanvasTool.dropPen &&
+                                        !_dropSecWidthMode &&
+                                        _touching &&
+                                        _mouseTip != null &&
+                                        !_mouseReady)
+                                      _mouseTip!,
+                                  ],
+                                  dropBadgeHits: _dropBadgeHits,
+                                  dropWidthPlusHits: _dropWidthPlusHits,
+                                  dropDraftTurnWidths: _dropDraftTurnWidths,
+                                  dropWidthMeasureOrigin: _dropSecWidthMode
+                                      ? _dropSecWidthOrigin
+                                      : null,
+                                  dropWidthMeasureTip: _dropSecWidthMode
+                                      ? _mouseTip
+                                      : null,
+                                  dropWidthMeasureTurnIndex: _dropSecWidthMode
+                                      ? _dropSecWidthTurnIndex
+                                      : null,
+                                  scalePxPerMm: _k,
+                                  draftFillArgb: _drawColorArgb,
+                                  viewScale: vs,
+                                  ironDraft: _wallDrawMode == WallDrawMode.ironPlate,
+                                  wallDraft: [
+                                    ..._wallPoints,
+                                    if (_touching &&
+                                        _mouseTip != null &&
+                                        !_mouseReady)
+                                      _mouseTip!,
+                                  ],
+                                ),
+                              ),
+                              CustomPaint(
+                                painter: OverlayTopPainter(
+                                  walls: _measurement!.walls,
+                                  ceilings: ceilings,
+                                  showLgsPreview: FeatureAccess.hasFullAccess(
+                                    context.read<AppState>().user,
+                                  ),
+                                  openings: _measurement!.openings,
+                                  openingDraft: [
+                                    ..._openingDraft,
+                                    if (_tool ==
+                                            CanvasTool.openingReinforce &&
+                                        _touching &&
+                                        _mouseTip != null &&
+                                        !_mouseReady &&
+                                        _openingDraft.length < 2)
+                                      _mouseTip!,
+                                  ],
+                                  openingDraftArgb: _drawColorArgb,
+                                  openingDraftMarkerSize: _strokeWidth,
+                                  scalePxPerMm: _k,
+                                  selectedWallId: _selectedWallId,
+                                  ironDraft:
+                                      _wallDrawMode == WallDrawMode.ironPlate,
+                                  wallDraft: [
+                                    ..._wallPoints,
+                                    if (_wallDrawMode ==
+                                            WallDrawMode.ironPlate &&
+                                        _touching &&
+                                        _mouseTip != null &&
+                                        !_mouseReady)
+                                      _mouseTip!,
+                                  ],
+                                  badgeHits: _badgeHits,
+                                  ceilingBadgeHits: null,
+                                  openingHits: _openingHits,
+                                  viewScale: vs,
+                                  paintCeilingLabels: false,
+                                ),
+                              ),
+                              ...badgeOverlays,
+                            ],
+                          );
+                        },
                       ),
                     ],
                   ),
@@ -1355,7 +3367,7 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
               ),
             ),
             // 画面固定サイズのマウス（ズーム非連動）
-            if (_touching && _mouseTip != null)
+            if ((_touching || _dropSecWidthMode) && _mouseTip != null)
               AnimatedBuilder(
                 animation: _transform,
                 builder: (context, _) {
@@ -1397,6 +3409,22 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                   );
                 },
               ),
+            if (_tool == CanvasTool.dropPen)
+              Positioned(
+                top: 10,
+                right: 10,
+                child: IgnorePointer(
+                  child: Material(
+                    elevation: 4,
+                    color: Colors.white.withValues(alpha: 0.94),
+                    borderRadius: BorderRadius.circular(10),
+                    child: const Padding(
+                      padding: EdgeInsets.fromLTRB(10, 8, 10, 8),
+                      child: DropDrawGuide(width: 148, height: 108),
+                    ),
+                  ),
+                ),
+              ),
           ],
         );
       },
@@ -1415,7 +3443,7 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                 onPressed: _ceilingDraft.isEmpty
                     ? null
                     : () => setState(() => _ceilingDraft.removeLast()),
-                child: const Text('点取消'),
+                child: Text(Ms.of(context).undoPoint),
               ),
               const SizedBox(width: 8),
               OutlinedButton(
@@ -1425,37 +3453,99 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                           _ceilingDraft.clear();
                           _clearWallDraft();
                         }),
-                child: const Text('クリア'),
+                child: Text(Ms.of(context).clear),
               ),
-              const Spacer(),
-              ElevatedButton(
-                onPressed: _confirmCeiling,
-                child: const Text('確認（天井）'),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 12),
+                  child: Text(
+                    Ms.of(context).ceilBottomHint,
+                    style: const TextStyle(fontSize: 12, color: AppTheme.steel),
+                  ),
+                ),
               ),
             ] else if (_tool == CanvasTool.wallPen) ...[
               OutlinedButton(
                 onPressed: (_wallPoints.isEmpty && _mouseTip == null)
                     ? null
                     : _clearWallDraft,
-                child: const Text('クリア'),
+                child: Text(Ms.of(context).clear),
               ),
-              const Expanded(
+              Expanded(
                 child: Padding(
-                  padding: EdgeInsets.only(left: 12),
+                  padding: const EdgeInsets.only(left: 12),
                   child: Text(
-                    '単線＝1本1番号／多線＝合算1番号（番号は最新線尾へ移動）',
-                    style: TextStyle(fontSize: 12, color: AppTheme.steel),
+                    Ms.of(context).wallBottomHint,
+                    style: const TextStyle(fontSize: 12, color: AppTheme.steel),
                   ),
                 ),
               ),
             ] else ...[
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'ピンチで拡大。壁線タップ＝色・十字入力／長押し＝削除。',
-                  style: TextStyle(fontSize: 12, color: AppTheme.steel),
+                  Ms.of(context).pinchHint,
+                  style: const TextStyle(fontSize: 12, color: AppTheme.steel),
                 ),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 天井：赤丸番号＋面積（画像座標系で Transform.scale して画面サイズ一定）
+class _CeilingNumberAreaChip extends StatelessWidget {
+  const _CeilingNumberAreaChip({
+    required this.number,
+    required this.areaText,
+  });
+
+  final int number;
+  final String areaText;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      elevation: 3,
+      shadowColor: Colors.black45,
+      color: const Color(0xFF0D47A1),
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(5, 4, 8, 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 26,
+              height: 26,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: const Color(0xFFE53935),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 1.5),
+              ),
+              child: Text(
+                '$number',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w900,
+                  height: 1,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              areaText,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+                height: 1.05,
+              ),
+            ),
           ],
         ),
       ),

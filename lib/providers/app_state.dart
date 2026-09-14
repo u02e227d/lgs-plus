@@ -29,19 +29,41 @@ class AppState extends ChangeNotifier {
   Future<void> bootstrap() async {
     booting = true;
     notifyListeners();
-    user = await _auth.currentUser();
-    if (user == null && testDirectLogin) {
-      user = await _auth.ensureTestLogin();
+    try {
+      user = await _auth.currentUser();
+      if (user == null && testDirectLogin) {
+        user = await _auth.ensureTestLogin();
+      }
+      if (user != null) {
+        projects = await _db.listProjects();
+      }
+    } catch (_) {
+      // ローカル起動は必ず完了させる
+    } finally {
+      booting = false;
+      notifyListeners();
     }
-    if (user != null) {
-      projects = await _db.listProjects();
+    final current = user;
+    if (current == null) return;
+    try {
+      final merged = await _auth.syncFromCloud(current);
+      if (user?.id == merged.id) {
+        user = merged;
+        notifyListeners();
+      }
+    } catch (_) {
+      // 圏外・サーバーエラーでもアプリは使える
     }
-    booting = false;
-    notifyListeners();
   }
 
   Future<void> refreshProjects() async {
     projects = await _db.listProjects();
+    notifyListeners();
+  }
+
+  Future<void> refreshUser() async {
+    if (user == null) return;
+    user = await _auth.currentUser();
     notifyListeners();
   }
 
@@ -79,6 +101,11 @@ class AppState extends ChangeNotifier {
     await _db.upsertProject(project);
     await refreshProjects();
     return (await _db.getProject(project.id)) ?? project;
+  }
+
+  Future<void> deleteProject(String id) async {
+    await _db.deleteProject(id);
+    await refreshProjects();
   }
 
   Future<Measurement> createMeasurement({

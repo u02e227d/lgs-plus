@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../l10n/locale_controller.dart';
+import '../../legal/legal_documents.dart';
 import '../../providers/app_state.dart';
 import '../../theme/app_theme.dart';
-import 'activate_screen.dart';
+import 'find_email_screen.dart';
+import 'forgot_password_screen.dart';
+import 'legal_document_screen.dart';
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -45,117 +49,174 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  void _open(Widget screen) {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => screen));
+  }
+
+  Widget _fieldLink(String label, VoidCallback onTap) {
+    return Align(
+      alignment: Alignment.centerRight,
+      child: TextButton(
+        onPressed: onTap,
+        style: TextButton.styleFrom(
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+        ),
+        child: Text(label, style: const TextStyle(fontSize: 13)),
+      ),
+    );
+  }
+
+  Widget _legalLink(LegalDocKind kind, String title) {
+    return GestureDetector(
+      onTap: () => _open(LegalDocumentScreen(kind: kind)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+        child: Text(
+          title,
+          style: const TextStyle(
+            color: Colors.black,
+            fontSize: 13,
+            decoration: TextDecoration.underline,
+            decorationColor: Colors.black54,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
     return Scaffold(
-      backgroundColor: AppTheme.navy,
-      body: ColoredBox(
-        color: AppTheme.navy,
-        child: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 480),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Image.asset(
-                      'assets/images/login_banner.png',
-                      fit: BoxFit.fitWidth,
-                      width: double.infinity,
-                      filterQuality: FilterQuality.medium,
-                    ),
-                    const SizedBox(height: 20),
-                    Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            const Text(
-                              'ログイン',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-                            TextField(
-                              controller: _email,
-                              keyboardType: TextInputType.emailAddress,
-                              decoration: const InputDecoration(
-                                labelText: 'メールアドレス',
-                                prefixIcon: Icon(Icons.email_outlined),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            TextField(
-                              controller: _password,
-                              obscureText: true,
-                              decoration: const InputDecoration(
-                                labelText: 'パスワード',
-                                prefixIcon: Icon(Icons.lock_outline),
-                              ),
-                            ),
-                            if (_error != null) ...[
-                              const SizedBox(height: 10),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          Image.asset(
+            'assets/images/login_banner.png',
+            fit: BoxFit.cover,
+            alignment: Alignment.center,
+            filterQuality: FilterQuality.medium,
+          ),
+          SafeArea(
+            child: Align(
+              alignment: Alignment(
+                0,
+                MediaQuery.sizeOf(context).shortestSide < 600 ? 1.0 : 0.92,
+              ),
+              child: SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(
+                  20,
+                  8,
+                  20,
+                  MediaQuery.sizeOf(context).shortestSide < 600 ? 4 : 24,
+                ),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 480),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Card(
+                        color: Colors.transparent,
+                        elevation: 0,
+                        shadowColor: Colors.transparent,
+                        surfaceTintColor: Colors.transparent,
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
                               Text(
-                                _error!,
-                                style: const TextStyle(color: AppTheme.danger),
+                                s.login,
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              TextField(
+                                controller: _email,
+                                keyboardType: TextInputType.emailAddress,
+                                decoration: InputDecoration(
+                                  labelText: s.email,
+                                  prefixIcon: const Icon(Icons.email_outlined),
+                                ),
+                              ),
+                              _fieldLink(s.forgotEmail, () {
+                                _open(const FindEmailScreen());
+                              }),
+                              TextField(
+                                controller: _password,
+                                obscureText: true,
+                                decoration: InputDecoration(
+                                  labelText: s.password,
+                                  prefixIcon: const Icon(Icons.lock_outline),
+                                ),
+                              ),
+                              _fieldLink(s.forgotPassword, () {
+                                _open(const ForgotPasswordScreen());
+                              }),
+                              if (_error != null) ...[
+                                const SizedBox(height: 10),
+                                Text(
+                                  _error!,
+                                  style: const TextStyle(color: AppTheme.danger),
+                                ),
+                              ],
+                              const SizedBox(height: 10),
+                              ElevatedButton(
+                                onPressed: _busy ? null : _login,
+                                child: _busy
+                                    ? const SizedBox(
+                                        height: 18,
+                                        width: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : Text(s.login),
+                              ),
+                              const SizedBox(height: 8),
+                              TextButton(
+                                onPressed: () => _open(const RegisterScreen()),
+                                child: Text(s.register),
                               ),
                             ],
-                            const SizedBox(height: 18),
-                            ElevatedButton(
-                              onPressed: _busy ? null : _login,
-                              child: _busy
-                                  ? const SizedBox(
-                                      height: 18,
-                                      width: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: Colors.white,
-                                      ),
-                                    )
-                                  : const Text('ログイン'),
-                            ),
-                            const SizedBox(height: 8),
-                            TextButton(
-                              onPressed: () {
-                                Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (_) => const RegisterScreen(),
-                                  ),
-                                );
-                              },
-                              child: const Text('新規登録（会社情報）'),
-                            ),
-                            TextButton(
-                              onPressed: () {
-                                Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (_) => const ActivateScreen(),
-                                  ),
-                                );
-                              },
-                              child: const Text('メール活性化 / パスワード設定'),
-                            ),
-                          ],
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      '完全オフライン対応 · 端側CV吸着 · SQLite保存',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.white54, fontSize: 12),
-                    ),
-                  ],
+                      const SizedBox(height: 8),
+                      Wrap(
+                        alignment: WrapAlignment.center,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          _legalLink(LegalDocKind.privacyPolicy, s.privacyPolicy),
+                          const Text(
+                            '・',
+                            style: TextStyle(
+                              color: Colors.black,
+                              fontSize: 13,
+                            ),
+                          ),
+                          _legalLink(LegalDocKind.terms, s.terms),
+                          const Text(
+                            '・',
+                            style: TextStyle(
+                              color: Colors.black,
+                              fontSize: 13,
+                            ),
+                          ),
+                          _legalLink(LegalDocKind.personalInfo, s.personalInfo),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../l10n/locale_controller.dart';
 import '../../providers/app_state.dart';
 import '../../theme/app_theme.dart';
+import '../account/account_screen.dart';
 import 'create_project_screen.dart';
 import 'project_detail_screen.dart';
 
@@ -13,13 +15,14 @@ class ProjectListScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final user = state.user;
+    final s = S.of(context);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('LGS+積算 現場一覧'),
+        title: Text(s.sitesTitle),
         actions: [
           IconButton(
-            tooltip: 'ログアウト',
+            tooltip: s.logout,
             onPressed: () async {
               await state.auth.logout();
               await state.setUser(null);
@@ -38,10 +41,12 @@ class ProjectListScreen extends StatelessWidget {
           }
         },
         icon: const Icon(Icons.add),
-        label: const Text('新規現場'),
+        label: Text(s.newSite),
       ),
-      body: Column(
+      body: Stack(
         children: [
+          Column(
+            children: [
           if (user != null)
             Container(
               width: double.infinity,
@@ -80,62 +85,172 @@ class ProjectListScreen extends StatelessWidget {
                 ],
               ),
             ),
+          if (user != null && !user.hasFullAccess())
+            Container(
+              width: double.infinity,
+              color: AppTheme.safetyYellow.withValues(alpha: 0.35),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
+                s.freeBanner,
+                style: const TextStyle(fontSize: 12, height: 1.4),
+              ),
+            ),
           Expanded(
             child: state.projects.isEmpty
-                ? const Center(
+                ? Center(
                     child: Text(
-                      '現場がありません\n右下から新規作成してください',
+                      s.noSites,
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: AppTheme.steel),
+                      style: const TextStyle(color: AppTheme.steel),
                     ),
                   )
                 : RefreshIndicator(
                     onRefresh: state.refreshProjects,
                     child: ListView.separated(
-                      padding: const EdgeInsets.all(16),
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 88),
                       itemCount: state.projects.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      separatorBuilder: (_, _) => const SizedBox(height: 10),
                       itemBuilder: (context, i) {
                         final p = state.projects[i];
                         return Card(
-                          child: ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 8,
-                            ),
-                            leading: Container(
-                              width: 44,
-                              height: 44,
-                              decoration: BoxDecoration(
-                                color: AppTheme.navy.withValues(alpha: 0.08),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: const Icon(
-                                Icons.apartment,
-                                color: AppTheme.navy,
-                              ),
-                            ),
-                            title: Text(
-                              p.name,
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w700),
-                            ),
-                            subtitle: Text('${p.address}\n${p.contactName} / ${p.phone}'),
-                            isThreeLine: true,
-                            trailing: const Icon(Icons.chevron_right),
-                            onTap: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) =>
-                                      ProjectDetailScreen(projectId: p.id),
+                          clipBehavior: Clip.hardEdge,
+                          child: Dismissible(
+                            key: ValueKey('project_${p.id}'),
+                            direction: DismissDirection.endToStart,
+                            confirmDismiss: (direction) async {
+                              final action = await showModalBottomSheet<String>(
+                                context: context,
+                                builder: (ctx) => SafeArea(
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      ListTile(
+                                        leading: const Icon(
+                                          Icons.delete_outline,
+                                          color: AppTheme.danger,
+                                        ),
+                                        title: Text(s.deleteSite),
+                                        onTap: () =>
+                                            Navigator.pop(ctx, 'delete'),
+                                      ),
+                                      ListTile(
+                                        leading: const Icon(Icons.close),
+                                        title: Text(s.cancel),
+                                        onTap: () =>
+                                            Navigator.pop(ctx, 'cancel'),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               );
+                              if (action != 'delete') return false;
+                              if (!context.mounted) return false;
+                              final ok = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: Text(s.deleteSite),
+                                  content: Text(s.deleteNamedConfirm(p.name)),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.pop(ctx, false),
+                                      child: Text(s.cancel),
+                                    ),
+                                    ElevatedButton(
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: AppTheme.danger,
+                                      ),
+                                      onPressed: () =>
+                                          Navigator.pop(ctx, true),
+                                      child: Text(s.confirmDelete),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              return ok == true;
                             },
+                            onDismissed: (_) async {
+                              final name = p.name;
+                              await context.read<AppState>().deleteProject(p.id);
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(s.deletedItem(name))),
+                              );
+                            },
+                            background: Container(
+                              alignment: Alignment.centerRight,
+                              padding: const EdgeInsets.only(right: 20),
+                              color: AppTheme.danger,
+                              child: Text(
+                                s.deleteSite,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                            child: ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 8,
+                              ),
+                              leading: Container(
+                                width: 44,
+                                height: 44,
+                                decoration: BoxDecoration(
+                                  color: AppTheme.navy.withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: const Icon(
+                                  Icons.apartment,
+                                  color: AppTheme.navy,
+                                ),
+                              ),
+                              title: Text(
+                                p.name,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              subtitle: Text(
+                                '${p.address}\n${p.contactName} / ${p.phone}',
+                              ),
+                              isThreeLine: true,
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) =>
+                                        ProjectDetailScreen(projectId: p.id),
+                                  ),
+                                );
+                              },
+                            ),
                           ),
                         );
                       },
                     ),
                   ),
+          ),
+        ],
+          ),
+          Positioned(
+            left: 16,
+            bottom: 16,
+            child: SafeArea(
+              child: FloatingActionButton.extended(
+                heroTag: 'account',
+                backgroundColor: Colors.white,
+                foregroundColor: AppTheme.navy,
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AccountScreen()),
+                  );
+                },
+                icon: const Icon(Icons.manage_accounts_outlined),
+                label: Text(s.goAccount),
+              ),
+            ),
           ),
         ],
       ),

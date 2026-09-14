@@ -3,6 +3,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../models/models.dart';
+import '../services/account_recovery.dart';
 
 /// オフライン永続化（SQLite）
 class AppDatabase {
@@ -22,7 +23,7 @@ class AppDatabase {
     final path = p.join(dir.path, 'lgs_plus.db');
     return openDatabase(
       path,
-      version: 3,
+      version: 7,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE users (
@@ -34,7 +35,12 @@ class AppDatabase {
             email TEXT NOT NULL UNIQUE,
             password_hash TEXT,
             activated INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            invite_code TEXT,
+            referred_by_code TEXT,
+            plan TEXT NOT NULL DEFAULT 'free',
+            access_until TEXT,
+            pending_notice TEXT
           )
         ''');
         await db.execute('''
@@ -68,8 +74,13 @@ class AppDatabase {
             walls_json TEXT NOT NULL,
             ceilings_json TEXT NOT NULL,
             openings_json TEXT,
+            drops_json TEXT,
             board_estimate_json TEXT,
             lgs_estimate_json TEXT,
+            cross_estimate_json TEXT,
+            drop_estimate_json TEXT,
+            ceiling_board_estimate_json TEXT,
+            ceiling_lgs_estimate_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
@@ -108,6 +119,36 @@ class AppDatabase {
             'ALTER TABLE measurements ADD COLUMN openings_json TEXT',
           );
         }
+        if (oldVersion < 4) {
+          await db.execute(
+            'ALTER TABLE measurements ADD COLUMN cross_estimate_json TEXT',
+          );
+        }
+        if (oldVersion < 5) {
+          await db.execute(
+            'ALTER TABLE measurements ADD COLUMN drops_json TEXT',
+          );
+          await db.execute(
+            'ALTER TABLE measurements ADD COLUMN drop_estimate_json TEXT',
+          );
+        }
+        if (oldVersion < 6) {
+          await db.execute(
+            'ALTER TABLE measurements ADD COLUMN ceiling_board_estimate_json TEXT',
+          );
+          await db.execute(
+            'ALTER TABLE measurements ADD COLUMN ceiling_lgs_estimate_json TEXT',
+          );
+        }
+        if (oldVersion < 7) {
+          await db.execute('ALTER TABLE users ADD COLUMN invite_code TEXT');
+          await db.execute('ALTER TABLE users ADD COLUMN referred_by_code TEXT');
+          await db.execute(
+            "ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'free'",
+          );
+          await db.execute('ALTER TABLE users ADD COLUMN access_until TEXT');
+          await db.execute('ALTER TABLE users ADD COLUMN pending_notice TEXT');
+        }
       },
     );
   }
@@ -142,6 +183,11 @@ class AppDatabase {
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
+  Future<void> deleteUser(String id) async {
+    final db = await database;
+    await db.delete('users', where: 'id = ?', whereArgs: [id]);
+  }
+
   Future<AppUser?> findUserByEmail(String email) async {
     final db = await database;
     final rows = await db.query(
@@ -153,9 +199,39 @@ class AppDatabase {
     return AppUser.fromMap(rows.first);
   }
 
+  Future<AppUser?> findUserByPhone(String phone) async {
+    final key = AccountRecovery.normalizePhone(phone);
+    if (key.isEmpty) return null;
+    for (final user in await listUsers()) {
+      if (AccountRecovery.normalizePhone(user.phone) == key) {
+        return user;
+      }
+    }
+    return null;
+  }
+
   Future<AppUser?> findUserById(String id) async {
     final db = await database;
     final rows = await db.query('users', where: 'id = ?', whereArgs: [id]);
+    if (rows.isEmpty) return null;
+    return AppUser.fromMap(rows.first);
+  }
+
+  Future<List<AppUser>> listUsers() async {
+    final db = await database;
+    final rows = await db.query('users');
+    return rows.map(AppUser.fromMap).toList();
+  }
+
+  Future<AppUser?> findUserByInviteCode(String code) async {
+    final key = code.trim().toUpperCase();
+    if (key.isEmpty) return null;
+    final db = await database;
+    final rows = await db.query(
+      'users',
+      where: 'UPPER(invite_code) = ?',
+      whereArgs: [key],
+    );
     if (rows.isEmpty) return null;
     return AppUser.fromMap(rows.first);
   }

@@ -23,6 +23,35 @@ void main() {
     expect(qty['runner_m'], 9);
   });
 
+  test('壁面積は開口を控除する', () {
+    final opening = WallOpening(
+      id: 'o1',
+      a: const Point2(1000, 0),
+      b: const Point2(1900, 0),
+      highlightArgb: 0xFFE53935,
+      widthMm: 900,
+      heightMm: 2100,
+    );
+    final qty = CalcEngine.calcWall(
+      a: const Point2(0, 0),
+      b: const Point2(4500, 0),
+      heightMm: 2700,
+      scalePxPerMm: 1,
+      method: const WallMethod(
+        useLgs: true,
+        pitch: LgsPitch.p450,
+        useBoard: false,
+        useCross: false,
+      ),
+      openings: [opening],
+    );
+    // 総 12.15 − 開口 1.89 = 10.26
+    expect(qty['wall_gross_area_m2'], closeTo(12.15, 0.01));
+    expect(qty['opening_area_m2'], closeTo(1.89, 0.01));
+    expect(qty['wall_net_area_m2'], closeTo(10.26, 0.01));
+    expect(qty['wall_area_m2'], closeTo(10.26, 0.01));
+  });
+
   test('曲がり角ではLGSを3本計上', () {
     // L字：3000 + 3000、角1つ
     final qty = CalcEngine.calcWall(

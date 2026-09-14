@@ -1,10 +1,20 @@
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'dart:io';
 
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../l10n/locale_controller.dart';
+import '../../l10n/s_measure.dart';
 import '../../models/models.dart';
 import '../../providers/app_state.dart';
 import '../../theme/app_theme.dart';
 import '../../services/estimate_builder.dart';
+import '../../services/feature_access.dart';
+import '../../services/measure_drawing_exporter.dart';
 import '../drawing/upload_drawing_screen.dart';
 import '../measure/estimate_table_screen.dart';
 import '../measure/measure_canvas_screen.dart';
@@ -24,6 +34,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
   List<DrawingFile> _drawings = [];
   List<Measurement> _measurements = [];
   bool _loading = true;
+  bool _exporting = false;
 
   @override
   void initState() {
@@ -33,9 +44,28 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
 
   Future<void> _reload() async {
     setState(() => _loading = true);
-    final db = context.read<AppState>().db;
+    final state = context.read<AppState>();
+    final db = state.db;
     final project = await db.getProject(widget.projectId);
-    final drawings = await db.listDrawings(widget.projectId);
+    var drawings = await db.listDrawings(widget.projectId);
+    final prefs = await SharedPreferences.getInstance();
+    // SharedPreferences に残った比例尺を DB へ復元
+    final fixed = <DrawingFile>[];
+    for (final d in drawings) {
+      if (d.scalePxPerMm != null && d.scalePxPerMm! > 0) {
+        fixed.add(d);
+        continue;
+      }
+      final k = prefs.getDouble('drawing_scale_${d.id}');
+      if (k != null && k > 0) {
+        final updated = d.copyWith(scalePxPerMm: k);
+        await state.saveDrawing(updated);
+        fixed.add(updated);
+      } else {
+        fixed.add(d);
+      }
+    }
+    drawings = fixed;
     final measurements = await db.listMeasurements(widget.projectId);
     if (!mounted) return;
     setState(() {
@@ -48,38 +78,89 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
 
   Future<void> _openSavedEstimate(
     Measurement m,
-    EstimateSheetKind kind,
-  ) async {
-    final lines =
-        kind == EstimateSheetKind.board ? m.boardEstimate : m.lgsEstimate;
-    if (lines.isEmpty) return;
+    EstimateSheetKind kind, {
+    String areaLabel = '壁',
+  }) async {
+    final lines = switch (kind) {
+      EstimateSheetKind.board => areaLabel == '天井'
+          ? _ceilingBoardLines(m)
+          : _wallBoardLines(m),
+      EstimateSheetKind.lgs => areaLabel == '天井'
+          ? _ceilingLgsLines(m)
+          : _wallLgsLines(m),
+      EstimateSheetKind.cross => m.crossEstimate,
+      EstimateSheetKind.drop => m.dropEstimate,
+    };
+    if (!await FeatureAccess.requireFullAccess(context)) return;
+    if (!mounted || lines.isEmpty) return;
     final hasWalls = m.walls.any((w) => w.estimateReady);
     final hasCeilings = m.ceilings.isNotEmpty;
-    final areas = EstimateBuilder.areasFromMeasurement(m);
+    final areas = EstimateBuilder.areasFromMeasurement(
+      m,
+      includeWalls: areaLabel != '天井',
+    );
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => EstimateTableScreen(
-          title: '${kind.label} — ${m.name}',
+          title: '${Ms.of(context).estimateKindTitle(kind.label)} — ${m.name}',
           initialLines: lines,
-          projectName: _project?.name,
+          projectName: m.name,
           siteAddress: _project?.address,
           sitePhone: _project?.phone,
           siteContact: _project?.contactName,
-          areaLabel: EstimateBuilder.areaLabelFor(
-            hasWalls: hasWalls,
-            hasCeilings: hasCeilings,
-          ),
-          areaM2: areas.lgsM2 > 0 ? areas.lgsM2 : null,
+          areaLabel: kind == EstimateSheetKind.cross
+              ? 'クロス'
+              : kind == EstimateSheetKind.drop
+                  ? '下り'
+                  : areaLabel == '天井'
+                      ? '天井'
+                      : EstimateBuilder.areaLabelFor(
+                          hasWalls: hasWalls,
+                          hasCeilings: hasCeilings,
+                        ),
+          areaM2: kind == EstimateSheetKind.drop
+              ? null
+              : (areas.lgsM2 > 0 ? areas.lgsM2 : null),
           lgsAreaM2: areas.lgsM2 > 0 ? areas.lgsM2 : null,
+          lgsMethodLabel: EstimateBuilder.lgsMethodLabel(
+            m,
+            areaKind: areaLabel == '天井' ? '天井' : '壁',
+          ),
           boardAreaM2: areas.boardM2 > 0 ? areas.boardM2 : null,
+          boardAreaParts: EstimateBuilder.boardAreasByName(
+            m,
+            areaKind: areaLabel == '天井' ? '天井' : '壁',
+          ),
           rockFeltM: areas.rockFeltM > 0 ? areas.rockFeltM : null,
           glassWoolM2: areas.glassWoolM2 > 0 ? areas.glassWoolM2 : null,
-          initialFilter: kind,
-          lockFilter: true,
+          initialFilter: kind == EstimateSheetKind.drop ? null : kind,
+          lockFilter: kind != EstimateSheetKind.drop,
           onSavePersist: (save) async {
-            final updated = save.kind == EstimateSheetKind.board
-                ? m.copyWith(boardEstimate: save.lines)
-                : m.copyWith(lgsEstimate: save.lines);
+            final ceiling = areaLabel == '天井';
+            final drop = areaLabel == '下り' ||
+                kind == EstimateSheetKind.drop ||
+                save.kind == EstimateSheetKind.drop;
+            final updated = drop
+                ? m.copyWith(
+                    dropEstimate:
+                        EstimateBuilder.mergeReplacingLineNumbersOfKind(
+                      existing: m.dropEstimate,
+                      incoming: save.lines,
+                      kind: save.kind,
+                    ),
+                  )
+                : switch (save.kind) {
+                    EstimateSheetKind.board => ceiling
+                        ? m.copyWith(ceilingBoardEstimate: save.lines)
+                        : m.copyWith(boardEstimate: save.lines),
+                    EstimateSheetKind.lgs => ceiling
+                        ? m.copyWith(ceilingLgsEstimate: save.lines)
+                        : m.copyWith(lgsEstimate: save.lines),
+                    EstimateSheetKind.cross =>
+                      m.copyWith(crossEstimate: save.lines),
+                    EstimateSheetKind.drop =>
+                      m.copyWith(dropEstimate: save.lines),
+                  };
             await context.read<AppState>().saveMeasurement(updated);
             await _reload();
           },
@@ -88,10 +169,196 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     );
   }
 
+  List<EstimateLine> _wallBoardLines(Measurement m) =>
+      m.boardEstimate.where(EstimateBuilder.isWallAreaKind).toList();
+
+  List<EstimateLine> _wallLgsLines(Measurement m) =>
+      m.lgsEstimate.where(EstimateBuilder.isWallAreaKind).toList();
+
+  List<EstimateLine> _ceilingBoardLines(Measurement m) {
+    if (m.ceilingBoardEstimate.isNotEmpty) return m.ceilingBoardEstimate;
+    return m.boardEstimate
+        .where((e) => EstimateBuilder.resolveAreaKind(e) == 'ceiling')
+        .toList();
+  }
+
+  List<EstimateLine> _ceilingLgsLines(Measurement m) {
+    if (m.ceilingLgsEstimate.isNotEmpty) return m.ceilingLgsEstimate;
+    return m.lgsEstimate
+        .where((e) => EstimateBuilder.resolveAreaKind(e) == 'ceiling')
+        .toList();
+  }
+
+  Future<List<Measurement>?> _pickExportMeasurements(
+    List<Measurement> candidates,
+  ) async {
+    final s = S.of(context);
+    final groups = <String, List<Measurement>>{};
+    for (final m in candidates) {
+      groups.putIfAbsent(m.drawingId, () => []).add(m);
+    }
+    final drawingIds = groups.keys.toList();
+    final selected = drawingIds.toSet();
+
+    String titleOf(String drawingId) =>
+        _drawings
+            .where((d) => d.id == drawingId)
+            .map((d) => d.fileName)
+            .firstOrNull ??
+        drawingId;
+
+    String subtitleOf(String drawingId) =>
+        groups[drawingId]!.map((m) => m.name).join(' / ');
+
+    return showDialog<List<Measurement>>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setLocal) {
+            return AlertDialog(
+              title: Text(s.selectExportDrawings),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: () {
+                          setLocal(() {
+                            if (selected.length == drawingIds.length) {
+                              selected.clear();
+                            } else {
+                              selected
+                                ..clear()
+                                ..addAll(drawingIds);
+                            }
+                          });
+                        },
+                        child: Text(
+                          selected.length == drawingIds.length
+                              ? s.deselectAll
+                              : s.selectAll,
+                        ),
+                      ),
+                    ),
+                    Flexible(
+                      child: ListView(
+                        shrinkWrap: true,
+                        children: [
+                          for (final id in drawingIds)
+                            CheckboxListTile(
+                              value: selected.contains(id),
+                              onChanged: (v) {
+                                setLocal(() {
+                                  if (v == true) {
+                                    selected.add(id);
+                                  } else {
+                                    selected.remove(id);
+                                  }
+                                });
+                              },
+                              title: Text(titleOf(id)),
+                              subtitle: Text(subtitleOf(id)),
+                              controlAffinity: ListTileControlAffinity.leading,
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: Text(s.cancel),
+                ),
+                ElevatedButton(
+                  onPressed: selected.isEmpty
+                      ? null
+                      : () => Navigator.pop(
+                            ctx,
+                            [
+                              for (final id in drawingIds)
+                                if (selected.contains(id)) ...groups[id]!,
+                            ],
+                          ),
+                  child: Text(s.export),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _exportMeasuredDrawings() async {
+    if (!await FeatureAccess.requireFullAccess(context)) return;
+    if (!mounted) return;
+    final s = S.of(context);
+    final project = _project;
+    if (project == null) return;
+    final candidates =
+        _measurements.where(MeasureDrawingExporter.hasContent).toList();
+    if (candidates.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(s.noMeasuredExport)),
+      );
+      return;
+    }
+    final targets = await _pickExportMeasurements(candidates);
+    if (targets == null || targets.isEmpty || !mounted) return;
+    setState(() => _exporting = true);
+    try {
+      final drawingsById = {for (final d in _drawings) d.id: d};
+      final db = context.read<AppState>().db;
+      for (final m in targets) {
+        if (drawingsById.containsKey(m.drawingId)) continue;
+        final extra = await db.getDrawing(m.drawingId);
+        if (extra != null) drawingsById[extra.id] = extra;
+      }
+      if (!mounted) return;
+      final bytes = await MeasureDrawingExporter.build(
+        project: project,
+        measurements: targets,
+        drawingsById: drawingsById,
+      );
+      if (!mounted) return;
+      final dir = await getTemporaryDirectory();
+      final stamp = DateFormat('yyyyMMdd_HHmm').format(DateTime.now());
+      final safe = project.name.replaceAll('/', '_');
+      final file = File('${dir.path}/測定_${safe}_$stamp.pdf');
+      await file.writeAsBytes(bytes, flush: true);
+      if (!mounted) return;
+      final box = context.findRenderObject() as RenderBox?;
+      final origin = box == null
+          ? const Rect.fromLTWH(80, 40, 1, 1)
+          : Rect.fromLTWH(box.size.width - 160, 12, 72, 40);
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path, mimeType: 'application/pdf')],
+          subject: s.exportSubject(project.name),
+          text: s.exportSubject(project.name),
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(s.exportFailed)),
+      );
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
+
   Future<void> _startMeasure() async {
+    final s = S.of(context);
     if (_drawings.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('先に図面をアップロードしてください')),
+        SnackBar(content: Text(s.uploadFirst)),
       );
       return;
     }
@@ -103,7 +370,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const ListTile(title: Text('測定する図面を選択')),
+              ListTile(title: Text(s.selectDrawing)),
               ..._drawings.map(
                 (d) => ListTile(
                   leading: Icon(
@@ -112,8 +379,8 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                   title: Text(d.fileName),
                   subtitle: Text(
                     d.scalePxPerMm == null
-                        ? 'スケール未設定'
-                        : 'K=${d.scalePxPerMm!.toStringAsFixed(4)} px/mm',
+                        ? s.scaleUnset
+                        : s.scaleK(d.scalePxPerMm!.toStringAsFixed(4)),
                   ),
                   onTap: () => Navigator.pop(ctx, d),
                 ),
@@ -128,7 +395,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
 
     if (drawing.scalePxPerMm == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('先に比例尺（スケール）を設定してください')),
+        SnackBar(content: Text(s.scaleFirst)),
       );
       return;
     }
@@ -137,22 +404,22 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('測定プロジェクト名'),
+        title: Text(s.measureName),
         content: TextField(
           controller: nameCtrl,
-          decoration: const InputDecoration(
-            hintText: '例：1F 飲食エリア 壁と天井積算',
+          decoration: InputDecoration(
+            hintText: s.measureNameHint,
           ),
           autofocus: true,
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('キャンセル'),
+            child: Text(s.cancel),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('開始'),
+            child: Text(s.start),
           ),
         ],
       ),
@@ -179,11 +446,39 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
     final project = _project;
-    return Scaffold(
+    return SafeArea(
+      left: true,
+      right: true,
+      top: false,
+      bottom: false,
+      minimum: const EdgeInsets.fromLTRB(14, 0, 6, 0),
+      child: Scaffold(
       appBar: AppBar(
-        title: Text(project?.name ?? '現場'),
+        title: Text(project?.name ?? s.site),
         actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: IconButton(
+              tooltip: s.export,
+              style: IconButton.styleFrom(
+                foregroundColor: Colors.white,
+                backgroundColor: Colors.white.withValues(alpha: 0.16),
+              ),
+              onPressed: _exporting ? null : _exportMeasuredDrawings,
+              icon: _exporting
+                  ? const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.ios_share, size: 24),
+            ),
+          ),
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: TextButton(
@@ -199,6 +494,8 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                 ),
               ),
               onPressed: () async {
+                if (!await FeatureAccess.requireFullAccess(context)) return;
+                if (!mounted) return;
                 await Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) =>
@@ -207,7 +504,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                 );
                 await _reload();
               },
-              child: const Text('注文'),
+              child: Text(s.order),
             ),
           ),
         ],
@@ -255,27 +552,33 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                             await _reload();
                           },
                           icon: const Icon(Icons.upload_file),
-                          label: const Text('図面アップロード'),
+                          label: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(s.uploadDrawing),
+                          ),
                         ),
                       ),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: OutlinedButton.icon(
                           onPressed: _startMeasure,
                           icon: const Icon(Icons.straighten),
-                          label: const Text('測定'),
+                          label: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(s.measure),
+                          ),
                         ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 20),
-                  const Text(
-                    '図面',
-                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+                  Text(
+                    s.drawings,
+                    style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
                   ),
                   const SizedBox(height: 8),
                   if (_drawings.isEmpty)
-                    const Text('未登録', style: TextStyle(color: AppTheme.steel))
+                    Text(s.unregistered, style: const TextStyle(color: AppTheme.steel))
                   else
                     ..._drawings.map((d) {
                       return Card(
@@ -295,12 +598,12 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                                         Icons.delete_outline,
                                         color: AppTheme.danger,
                                       ),
-                                      title: const Text('削除'),
+                                      title: Text(s.delete),
                                       onTap: () => Navigator.pop(ctx, 'delete'),
                                     ),
                                     ListTile(
                                       leading: const Icon(Icons.close),
-                                      title: const Text('キャンセル'),
+                                      title: Text(s.cancel),
                                       onTap: () =>
                                           Navigator.pop(ctx, 'cancel'),
                                     ),
@@ -313,21 +616,21 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                             final ok = await showDialog<bool>(
                               context: context,
                               builder: (ctx) => AlertDialog(
-                                title: const Text('図面を削除'),
+                                title: Text(s.deleteDrawing),
                                 content: Text(
-                                  '「${d.fileName}」を削除しますか？',
+                                  s.deleteNamedConfirm(d.fileName),
                                 ),
                                 actions: [
                                   TextButton(
                                     onPressed: () => Navigator.pop(ctx, false),
-                                    child: const Text('キャンセル'),
+                                    child: Text(s.cancel),
                                   ),
                                   ElevatedButton(
                                     style: ElevatedButton.styleFrom(
                                       backgroundColor: AppTheme.danger,
                                     ),
                                     onPressed: () => Navigator.pop(ctx, true),
-                                    child: const Text('削除する'),
+                                    child: Text(s.deleteAction),
                                   ),
                                 ],
                               ),
@@ -342,16 +645,16 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                             await _reload();
                             if (!mounted) return;
                             ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('「${d.fileName}」を削除しました')),
+                              SnackBar(content: Text(s.deletedItem(d.fileName))),
                             );
                           },
                           background: Container(
                             alignment: Alignment.centerRight,
                             padding: const EdgeInsets.only(right: 20),
                             color: AppTheme.danger,
-                            child: const Text(
-                              '削除',
-                              style: TextStyle(
+                            child: Text(
+                              s.delete,
+                              style: const TextStyle(
                                 color: Colors.white,
                                 fontWeight: FontWeight.w700,
                               ),
@@ -367,8 +670,8 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                             title: Text(d.fileName),
                             subtitle: Text(
                               d.scalePxPerMm == null
-                                  ? 'スケール未設定 → タップして設定'
-                                  : 'スケール K=${d.scalePxPerMm!.toStringAsFixed(4)} px/mm',
+                                  ? s.scaleUnsetTap
+                                  : s.scaleK(d.scalePxPerMm!.toStringAsFixed(4)),
                             ),
                             onTap: () async {
                               await Navigator.of(context).push(
@@ -386,13 +689,13 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                       );
                     }),
                   const SizedBox(height: 20),
-                  const Text(
-                    '測定一覧',
-                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+                  Text(
+                    s.measureList,
+                    style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
                   ),
                   const SizedBox(height: 8),
                   if (_measurements.isEmpty)
-                    const Text('未測定', style: TextStyle(color: AppTheme.steel))
+                    Text(s.unmeasured, style: const TextStyle(color: AppTheme.steel))
                   else
                     ..._measurements.expand((m) {
                       final wallN = m.walls.length;
@@ -415,13 +718,13 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                                           Icons.delete_outline,
                                           color: AppTheme.danger,
                                         ),
-                                        title: const Text('削除'),
+                                        title: Text(s.delete),
                                         onTap: () =>
                                             Navigator.pop(ctx, 'delete'),
                                       ),
                                       ListTile(
                                         leading: const Icon(Icons.close),
-                                        title: const Text('キャンセル'),
+                                        title: Text(s.cancel),
                                         onTap: () =>
                                             Navigator.pop(ctx, 'cancel'),
                                       ),
@@ -434,13 +737,13 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                               final ok = await showDialog<bool>(
                                 context: context,
                                 builder: (ctx) => AlertDialog(
-                                  title: const Text('測定を削除'),
-                                  content: Text('「${m.name}」を削除しますか？'),
+                                  title: Text(s.deleteMeasure),
+                                  content: Text(s.deleteNamedConfirm(m.name)),
                                   actions: [
                                     TextButton(
                                       onPressed: () =>
                                           Navigator.pop(ctx, false),
-                                      child: const Text('キャンセル'),
+                                      child: Text(s.cancel),
                                     ),
                                     ElevatedButton(
                                       style: ElevatedButton.styleFrom(
@@ -448,7 +751,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                                       ),
                                       onPressed: () =>
                                           Navigator.pop(ctx, true),
-                                      child: const Text('削除する'),
+                                      child: Text(s.deleteAction),
                                     ),
                                   ],
                                 ),
@@ -464,16 +767,16 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                               if (!mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
-                                    content: Text('「${m.name}」を削除しました')),
+                                    content: Text(s.deletedItem(m.name))),
                               );
                             },
                             background: Container(
                               alignment: Alignment.centerRight,
                               padding: const EdgeInsets.only(right: 20),
                               color: AppTheme.danger,
-                              child: const Text(
-                                '削除',
-                                style: TextStyle(
+                              child: Text(
+                                s.delete,
+                                style: const TextStyle(
                                   color: Colors.white,
                                   fontWeight: FontWeight.w700,
                                 ),
@@ -482,7 +785,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                             child: ListTile(
                               leading: const Icon(Icons.architecture),
                               title: Text(m.name),
-                              subtitle: Text('壁 $wallN / 天井 $ceilN'),
+                              subtitle: Text(s.wallCeilingCount(wallN, ceilN)),
                               trailing: const Icon(Icons.chevron_right),
                               onTap: () async {
                                 final drawing = await context
@@ -505,33 +808,106 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                         ),
                       ];
 
-                      if (m.boardEstimate.isNotEmpty) {
+                      if (_wallBoardLines(m).isNotEmpty) {
                         tiles.add(
                           Card(
                             child: ListTile(
                               leading: const Icon(Icons.grid_on),
-                              title: Text('ボード試算表 — ${m.name}'),
-                              subtitle: Text('明細 ${m.boardEstimate.length} 行'),
+                              title: Text(s.boardEstimateWall(m.name)),
+                              subtitle: Text(s.estimateLines(_wallBoardLines(m).length)),
                               trailing: const Icon(Icons.chevron_right),
                               onTap: () => _openSavedEstimate(
                                 m,
                                 EstimateSheetKind.board,
+                                areaLabel: '壁',
                               ),
                             ),
                           ),
                         );
                       }
-                      if (m.lgsEstimate.isNotEmpty) {
+                      if (_ceilingBoardLines(m).isNotEmpty) {
+                        tiles.add(
+                          Card(
+                            child: ListTile(
+                              leading: const Icon(Icons.grid_on),
+                              title: Text(s.boardEstimateCeil(m.name)),
+                              subtitle:
+                                  Text(s.estimateLines(_ceilingBoardLines(m).length)),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () => _openSavedEstimate(
+                                m,
+                                EstimateSheetKind.board,
+                                areaLabel: '天井',
+                              ),
+                            ),
+                          ),
+                        );
+                      }
+                      if (_wallLgsLines(m).isNotEmpty) {
                         tiles.add(
                           Card(
                             child: ListTile(
                               leading: const Icon(Icons.view_column),
-                              title: Text('LGS試算表 — ${m.name}'),
-                              subtitle: Text('明細 ${m.lgsEstimate.length} 行'),
+                              title: Text(s.lgsEstimateWall(m.name)),
+                              subtitle: Text(s.estimateLines(_wallLgsLines(m).length)),
                               trailing: const Icon(Icons.chevron_right),
                               onTap: () => _openSavedEstimate(
                                 m,
                                 EstimateSheetKind.lgs,
+                                areaLabel: '壁',
+                              ),
+                            ),
+                          ),
+                        );
+                      }
+                      if (_ceilingLgsLines(m).isNotEmpty) {
+                        tiles.add(
+                          Card(
+                            child: ListTile(
+                              leading: const Icon(Icons.view_column),
+                              title: Text(s.lgsEstimateCeil(m.name)),
+                              subtitle:
+                                  Text(s.estimateLines(_ceilingLgsLines(m).length)),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () => _openSavedEstimate(
+                                m,
+                                EstimateSheetKind.lgs,
+                                areaLabel: '天井',
+                              ),
+                            ),
+                          ),
+                        );
+                      }
+                      if (m.crossEstimate.isNotEmpty) {
+                        tiles.add(
+                          Card(
+                            child: ListTile(
+                              leading: const Icon(Icons.wallpaper),
+                              title: Text(s.crossEstimate(m.name)),
+                              subtitle:
+                                  Text(s.estimateLines(m.crossEstimate.length)),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () => _openSavedEstimate(
+                                m,
+                                EstimateSheetKind.cross,
+                              ),
+                            ),
+                          ),
+                        );
+                      }
+                      if (m.dropEstimate.isNotEmpty) {
+                        tiles.add(
+                          Card(
+                            child: ListTile(
+                              leading:
+                                  const Icon(Icons.vertical_align_bottom),
+                              title: Text(s.dropEstimate(m.name)),
+                              subtitle:
+                                  Text(s.estimateLines(m.dropEstimate.length)),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () => _openSavedEstimate(
+                                m,
+                                EstimateSheetKind.drop,
                               ),
                             ),
                           ),
@@ -542,6 +918,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                 ],
               ),
             ),
+    ),
     );
   }
 }

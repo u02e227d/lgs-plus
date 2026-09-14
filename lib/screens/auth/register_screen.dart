@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../l10n/locale_controller.dart';
 import '../../providers/app_state.dart';
 import '../../theme/app_theme.dart';
 import 'activate_screen.dart';
@@ -16,18 +17,18 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _form = GlobalKey<FormState>();
   final _company = TextEditingController();
   final _address = TextEditingController();
-  final _contact = TextEditingController();
   final _phone = TextEditingController();
   final _email = TextEditingController();
+  final _invite = TextEditingController();
   bool _busy = false;
 
   @override
   void dispose() {
     _company.dispose();
     _address.dispose();
-    _contact.dispose();
     _phone.dispose();
     _email.dispose();
+    _invite.dispose();
     super.dispose();
   }
 
@@ -36,26 +37,32 @@ class _RegisterScreenState extends State<RegisterScreen> {
     setState(() => _busy = true);
     try {
       final state = context.read<AppState>();
-      await state.auth.register(
-        companyName: _company.text,
-        address: _address.text,
-        contactName: _contact.text,
+      final name = _company.text.trim();
+      final user = await state.auth.register(
+        companyName: name,
+        address: _address.text.trim(),
+        contactName: name,
         phone: _phone.text,
         email: _email.text,
+        inviteCode: _invite.text,
       );
       if (!mounted) return;
+      final s = S.of(context);
+      final bonus = user.pendingNotice;
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('登録完了'),
+          title: Text(s.registerDone),
           content: Text(
-            '活性化メールを ${_email.text.trim()} に送信しました（デモ：ローカル模擬）。\n'
-            '次の画面でパスワードを設定してアカウントを有効化してください。',
+            [
+              s.registerMailDemo(_email.text.trim()),
+              if (bonus != null && bonus.isNotEmpty) bonus,
+            ].join('\n'),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx),
-              child: const Text('OK'),
+              child: Text(s.ok),
             ),
           ],
         ),
@@ -78,25 +85,31 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('新規登録')),
+      appBar: AppBar(title: Text(s.registerTitle)),
       body: Form(
         key: _form,
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            const Text(
-              '会社情報を入力してください。登録後、メールでパスワード設定リンクが届きます。',
-              style: TextStyle(color: AppTheme.steel),
+            Text(
+              s.registerIntro,
+              style: const TextStyle(color: AppTheme.steel),
             ),
             const SizedBox(height: 16),
-            _field(_company, '会社名称', Icons.business),
-            _field(_address, '住所', Icons.location_on_outlined),
-            _field(_contact, '担当者名', Icons.person_outline),
-            _field(_phone, '電話番号', Icons.phone_outlined,
+            _field(_company, s.companyOrName, Icons.business),
+            _field(
+              _address,
+              s.address,
+              Icons.location_on_outlined,
+              type: TextInputType.streetAddress,
+            ),
+            _field(_phone, s.phone, Icons.phone_outlined,
                 type: TextInputType.phone),
-            _field(_email, 'メールアドレス', Icons.email_outlined,
+            _field(_email, s.email, Icons.email_outlined,
                 type: TextInputType.emailAddress),
+            _optionalField(_invite, s.inviteCodeOptional, Icons.card_giftcard),
             const SizedBox(height: 20),
             ElevatedButton(
               onPressed: _busy ? null : _submit,
@@ -109,7 +122,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         color: Colors.white,
                       ),
                     )
-                  : const Text('登録する'),
+                  : Text(s.doRegister),
             ),
           ],
         ),
@@ -130,7 +143,22 @@ class _RegisterScreenState extends State<RegisterScreen> {
         keyboardType: type,
         decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon)),
         validator: (v) =>
-            (v == null || v.trim().isEmpty) ? '$labelを入力してください' : null,
+            (v == null || v.trim().isEmpty) ? S.of(context).pleaseEnter(label) : null,
+      ),
+    );
+  }
+
+  Widget _optionalField(
+    TextEditingController c,
+    String label,
+    IconData icon,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextFormField(
+        controller: c,
+        textCapitalization: TextCapitalization.characters,
+        decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon)),
       ),
     );
   }

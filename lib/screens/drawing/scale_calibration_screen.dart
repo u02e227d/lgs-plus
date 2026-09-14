@@ -4,14 +4,18 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../l10n/locale_controller.dart';
 import '../../models/models.dart';
 import '../../providers/app_state.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/keyboard_done.dart';
 
 /// InfCMS 同型の実測値（十字）比例尺設定
 /// - ボタンで十字を出し、画面固定サイズのままドラッグ
 /// - 始点確定 → 終点確定 → 実寸入力 → K (px/mm)
+/// - 保存後は SQLite ＋ SharedPreferences にローカル永続化
 class ScaleCalibrationScreen extends StatefulWidget {
   const ScaleCalibrationScreen({super.key, required this.drawing});
 
@@ -133,9 +137,9 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
       });
     });
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('実測値アイコンを始点までドラッグし、指を離して確定'),
-        duration: Duration(seconds: 2),
+      SnackBar(
+        content: Text(S.of(context).scaleHintStart),
+        duration: const Duration(seconds: 2),
       ),
     );
   }
@@ -178,9 +182,9 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
       });
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('始点確定。終点までドラッグして指を離してください'),
-          duration: Duration(seconds: 2),
+        SnackBar(
+          content: Text(S.of(context).scaleHintEnd),
+          duration: const Duration(seconds: 2),
         ),
       );
       return;
@@ -190,7 +194,7 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
       // 始点とほぼ同じ位置は無視
       if ((contentPt - _startContent!).distance < 8) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('始点から離れた位置で終点を指定してください')),
+          SnackBar(content: Text(S.of(context).scaleNeedDistance)),
         );
         return;
       }
@@ -208,25 +212,29 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
     final ok = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('実寸を入力'),
+      builder: (ctx) {
+        final s = S.of(ctx);
+        return AlertDialog(
+        title: Text(s.enterRealSize),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '図面上の距離: ${px.toStringAsFixed(1)} px',
+              s.drawingDistancePx(px.toStringAsFixed(1)),
               style: const TextStyle(color: AppTheme.steel, fontSize: 13),
             ),
             const SizedBox(height: 12),
             TextField(
               controller: _mmCtrl,
               autofocus: true,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(
-                labelText: '実寸 (mm)',
-                hintText: '例: 1950',
+              keyboardType: DoneKeyboard.decimal,
+              inputFormatters: DoneKeyboard.decimalFormatters,
+              textInputAction: DoneKeyboard.action,
+              onSubmitted: DoneKeyboard.onSubmitted,
+              decoration: InputDecoration(
+                labelText: s.realSizeMm,
+                hintText: '1950',
               ),
             ),
           ],
@@ -240,14 +248,15 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
               });
               Navigator.pop(ctx, false);
             },
-            child: const Text('やり直す'),
+            child: Text(s.retry),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('確定'),
+            child: Text(s.confirmValue),
           ),
         ],
-      ),
+      );
+      },
     );
 
     if (ok != true || !mounted) return;
@@ -255,7 +264,7 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
     final mm = double.tryParse(_mmCtrl.text.trim().replaceAll(',', ''));
     if (mm == null || mm <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('正しいミリメートル値を入力してください（0より大きい数）')),
+        SnackBar(content: Text(S.of(context).invalidMm)),
       );
       setState(() {
         _endContent = null;
@@ -267,35 +276,49 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
     // K = 図面ピクセル / 実寸mm（測定キャンバスと同じ定義）
     final k = px / mm;
     final updated = widget.drawing.copyWith(scalePxPerMm: k);
-    await context.read<AppState>().saveDrawing(updated);
+    final saved = await context.read<AppState>().saveDrawing(updated);
+    // 端末ローカルへ二重保存（再起動後も確実に復元）
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('drawing_scale_${saved.id}', k);
+    await prefs.setString(
+      'drawing_scale_meta_${saved.id}',
+      '${DateTime.now().toIso8601String()}|${px.toStringAsFixed(1)}|$mm',
+    );
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          '比例尺を保存しました  ${px.toStringAsFixed(0)}px ÷ ${mm.toStringAsFixed(0)}mm'
-          ' = K=${k.toStringAsFixed(4)} px/mm',
+          S.of(context).scaleSaved(
+            px.toStringAsFixed(0),
+            mm.toStringAsFixed(0),
+            k.toStringAsFixed(4),
+          ),
         ),
       ),
     );
-    Navigator.pop(context, updated);
+    Navigator.pop(context, saved);
   }
 
   @override
   Widget build(BuildContext context) {
+    final s = S.of(context);
+    final existingK = widget.drawing.scalePxPerMm;
     final phaseHint = switch (_phase) {
-      _ScalePhase.idle => '実測値ボタンを押し、十字を図面に出してください',
-      _ScalePhase.aimStart => '十字を始点へドラッグ → 指を離して確定',
-      _ScalePhase.aimEnd => '十字を終点へドラッグ → 指を離して実寸入力',
+      _ScalePhase.idle => existingK != null
+          ? s.scaleHintIdleSaved(existingK.toStringAsFixed(4))
+          : s.scaleHintIdleUnset,
+      _ScalePhase.aimStart => s.scaleHintAimStart,
+      _ScalePhase.aimEnd => s.scaleHintAimEnd,
     };
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('比例尺設定'),
+        title: Text(s.setScale),
         actions: [
           if (_phase != _ScalePhase.idle)
             TextButton(
               onPressed: _reset,
-              child: const Text('リセット', style: TextStyle(color: Colors.white)),
+              child: Text(s.reset, style: const TextStyle(color: Colors.white)),
             ),
         ],
       ),
@@ -341,7 +364,7 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
                           ),
                           const SizedBox(width: 6),
                           Text(
-                            _phase == _ScalePhase.idle ? '実測値' : '測定中',
+                            _phase == _ScalePhase.idle ? s.setScale : s.measuring,
                             style: TextStyle(
                               fontWeight: FontWeight.w700,
                               color: _phase != _ScalePhase.idle

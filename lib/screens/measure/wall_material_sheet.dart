@@ -1,19 +1,27 @@
 import 'package:flutter/material.dart';
 
+import '../../l10n/locale_controller.dart';
+import '../../l10n/s_measure.dart';
 import '../../models/models.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/keyboard_done.dart';
+import '../../widgets/lockable_picker.dart';
+import 'cross_dedicated_sheet.dart';
 
-enum WallMaterialAction { methodSelect, delete }
+enum WallMaterialAction { methodSelect, delete, openCross }
 
 class WallMaterialResult {
   WallMaterialResult({
     required this.method,
     required this.action,
     required this.heightMm,
+    this.measuredLengthMm = 0,
   });
   final WallMethod method;
   final WallMaterialAction action;
   final double heightMm;
+  /// 基本設定に出した画線長さ（材料選択へそのまま渡す）
+  final double measuredLengthMm;
 }
 
 /// 材料寸法設定（壁高 / B面ボード / LGS / A面ボード）
@@ -24,6 +32,13 @@ class WallMaterialSheet extends StatefulWidget {
     this.initialHeightMm,
     this.wallNumber = 1,
     this.measuredLengthMm,
+    this.measuredOpeningAreaM2,
+    this.ironPlateMeasured = false,
+    this.onCrossEstimateSave,
+    this.projectName,
+    this.siteAddress,
+    this.sitePhone,
+    this.siteContact,
   });
 
   final WallMethod? initialMethod;
@@ -31,6 +46,15 @@ class WallMaterialSheet extends StatefulWidget {
   final int wallNumber;
   /// 画線の測定延長 (mm)
   final double? measuredLengthMm;
+  /// 紐付け済み開口の合計面積 (㎡)
+  final double? measuredOpeningAreaM2;
+  /// 鉄板専用で測った線
+  final bool ironPlateMeasured;
+  final Future<void> Function(EstimateSaveResult result)? onCrossEstimateSave;
+  final String? projectName;
+  final String? siteAddress;
+  final String? sitePhone;
+  final String? siteContact;
 
   @override
   State<WallMaterialSheet> createState() => _WallMaterialSheetState();
@@ -41,17 +65,15 @@ class _WallMaterialSheetState extends State<WallMaterialSheet> {
     3.0, 4.0, 5.0, 6.0, 8.0, 9.0, 9.5, 10.0, 12.0, 12.5, 15.0, 21.0,
   ];
   static const lgsMms = [
-    20.0, 25.0, 40.0, 45.0, 50.0, 65.0, 75.0, 90.0, 100.0,
+    20.0, 25.0, 38.0, 40.0, 45.0, 50.0, 65.0, 75.0, 90.0, 100.0,
   ];
 
   late List<double> _boardB;
   late List<double> _boardA;
   late double _runner;
   late double _stud;
-  late bool _useIronPlate;
-  /// null＝なし、2〜7＝段数
-  int? _ironPlateSegments;
   late final TextEditingController _height;
+  late CrossDedicatedConfig _crossDedicated;
 
   @override
   void initState() {
@@ -67,9 +89,7 @@ class _WallMaterialSheetState extends State<WallMaterialSheet> {
     if (!lgsMms.contains(_runner)) {
       _runner = _nearest(lgsMms, _runner);
     }
-    _useIronPlate = m?.useIronPlate ?? false;
-    final seg = m?.ironPlateSegments ?? 0;
-    _ironPlateSegments = (seg >= 2 && seg <= 7) ? seg : null;
+    _crossDedicated = m?.crossDedicated ?? const CrossDedicatedConfig();
     final h = widget.initialHeightMm ?? 2700;
     _height = TextEditingController(
       text: h == h.roundToDouble()
@@ -118,70 +138,19 @@ class _WallMaterialSheetState extends State<WallMaterialSheet> {
   String _mmLabel(double mm) =>
       mm == mm.roundToDouble() ? '${mm.toStringAsFixed(0)}mm' : '${mm}mm';
 
-  String get _measuredLengthLabel {
-    final mm = widget.measuredLengthMm ?? 0;
-    if (mm <= 0) return '—';
-    if (mm >= 1000) {
-      final m = mm / 1000.0;
-      return m == m.roundToDouble()
-          ? '${m.toStringAsFixed(0)} m'
-          : '${m.toStringAsFixed(2)} m';
-    }
-    return mm == mm.roundToDouble()
-        ? '${mm.toStringAsFixed(0)} mm'
-        : '${mm.toStringAsFixed(1)} mm';
-  }
-
-  void _setIronPlate(bool on) {
-    setState(() {
-      _useIronPlate = on;
-      if (on) {
-        // 鉄板ON → A/B面ボード・LGS をオフ
-        _boardA = [];
-        _boardB = [];
-      } else {
-        _ironPlateSegments = null;
-      }
-    });
-  }
-
   double? get _parsedHeight {
     final h = double.tryParse(_height.text.trim());
     if (h == null || h <= 0) return null;
     return h;
   }
 
-  bool get _needsSpacer => !_useIronPlate && _stud < _runner;
+  bool get _needsSpacer => _stud < _runner;
 
   WallMethod _buildMethod() => _buildMethodFor(_parsedHeight ?? 2700);
 
   WallMethod _buildMethodFor(double h) {
     final base = widget.initialMethod ?? const WallMethod();
-    if (_useIronPlate) {
-      return base.copyWith(
-        useLgs: false,
-        useBoard: false,
-        useBoardFaceA: false,
-        useBoardFaceB: false,
-        bothSides: false,
-        boardStackA: '',
-        boardStackB: '',
-        boardLayerSizesA: const [],
-        boardLayerSizesB: const [],
-        studLengthMm: h,
-        useSpacer: false,
-        useFureDome: false,
-        useRockFelt: false,
-        useTigerUtight: false,
-        useGlassWool: false,
-        useCross: false,
-        useIronPlate: true,
-        ironPlateSegments: _ironPlateSegments ?? 0,
-        ironPlateWidthMm: base.ironPlateWidthMm > 0 ? base.ironPlateWidthMm : 300,
-        ironPlateLengthMm:
-            base.ironPlateLengthMm > 0 ? base.ironPlateLengthMm : 1820,
-      );
-    }
+    final keepIron = widget.ironPlateMeasured || base.useIronPlate;
 
     final stackA = _stackOf(_boardA);
     final stackB = _stackOf(_boardB);
@@ -223,18 +192,25 @@ class _WallMaterialSheetState extends State<WallMaterialSheet> {
       useFureDome: !needSp,
       useRockFelt: needSp ? true : base.useRockFelt,
       useTigerUtight: needSp ? true : base.useTigerUtight,
-      useIronPlate: false,
-      ironPlateSegments: 0,
+      useIronPlate: keepIron,
+      ironPlateSegments: keepIron ? base.ironPlateSegmentCount : 1,
+      ironPlateWidthMm: base.ironPlateWidthMm > 0 ? base.ironPlateWidthMm : 300,
+      ironPlateLengthMm:
+          base.ironPlateLengthMm > 0 ? base.ironPlateLengthMm : 1820,
       boardSize: sizesA.isNotEmpty ? sizesA.first : BoardSize.size36,
       boardSizeB: sizesB.isNotEmpty ? sizesB.first : BoardSize.size36,
       boardLayerSizesA: sizesA,
       boardLayerSizesB: sizesB,
+      useCross: _crossDedicated.enabled,
+      crossWidthM: _crossDedicated.crossWidthM > 0
+          ? _crossDedicated.crossWidthM
+          : 0.9,
+      crossDedicated: _crossDedicated,
     );
   }
 
   bool get _ready {
     if (_parsedHeight == null) return false;
-    if (_useIronPlate) return true;
     return _runner > 0 && _stud > 0;
   }
 
@@ -245,6 +221,82 @@ class _WallMaterialSheetState extends State<WallMaterialSheet> {
       method: _buildMethodFor(h),
       action: action,
       heightMm: h,
+      measuredLengthMm: widget.measuredLengthMm ?? 0,
+    );
+  }
+
+  Future<void> _openCrossDedicated() async {
+    final len = widget.measuredLengthMm ?? 0;
+    final h = _parsedHeight ?? widget.initialHeightMm ?? 2700;
+    final opening = (widget.measuredOpeningAreaM2 ?? 0).clamp(0.0, double.infinity);
+    final gross = (len / 1000.0) * (h / 1000.0);
+    final area = (gross - opening).clamp(0.0, double.infinity);
+    final config = await Navigator.of(context, rootNavigator: true)
+        .push<CrossDedicatedConfig>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => CrossDedicatedSheet(
+          areaM2: area,
+          initial: _crossDedicated,
+          title: Ms.of(context).crossDedicatedWall,
+          showWallFaces: true,
+          onSavePersist: widget.onCrossEstimateSave,
+          projectName: widget.projectName,
+          siteAddress: widget.siteAddress,
+          sitePhone: widget.sitePhone,
+          siteContact: widget.siteContact,
+        ),
+      ),
+    );
+    if (config == null || !mounted) return;
+    setState(() => _crossDedicated = config);
+  }
+
+  Future<void> _confirmDeleteLine() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(Ms.of(ctx).deleteThisLine),
+        content: Text(Ms.of(ctx).deleteThisLineQ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(S.of(ctx).cancel),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.danger),
+            child: Text(S.of(ctx).deleteAction),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    Navigator.pop(
+      context,
+      WallMaterialResult(
+        method: _buildMethod(),
+        action: WallMaterialAction.delete,
+        heightMm: _parsedHeight ?? widget.initialHeightMm ?? 2700,
+        measuredLengthMm: widget.measuredLengthMm ?? 0,
+      ),
+    );
+  }
+
+  Widget _crossDedicatedButton() {
+    final on = _crossDedicated.enabled;
+    return FilledButton(
+      onPressed: _openCrossDedicated,
+      style: FilledButton.styleFrom(
+        backgroundColor: const Color(0xFF1E6BD6),
+        foregroundColor: Colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+      child: Text(
+        on ? Ms.of(context).crossDedicatedOn : Ms.of(context).crossDedicated,
+        style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+      ),
     );
   }
 
@@ -260,88 +312,69 @@ class _WallMaterialSheetState extends State<WallMaterialSheet> {
     required List<double> layers,
     required ValueChanged<List<double>> onChanged,
   }) {
+    final labels = <String>[Ms.of(context).none, for (final mm in boardMms) _mmLabel(mm)];
     // なし（空）または各層の厚さ
     if (layers.isEmpty) {
-      return DropdownButton<double?>(
-        value: null,
-        hint: const Text('なし'),
-        items: [
-          const DropdownMenuItem<double?>(
-            value: null,
-            child: Text('なし'),
-          ),
-          for (final mm in boardMms)
-            DropdownMenuItem<double?>(
-              value: mm,
-              child: Text(_mmLabel(mm)),
-            ),
-        ],
-        onChanged: (v) {
-          if (v == null) {
+      return LockableCupertinoPicker(
+        label: Ms.of(context).thickness,
+        labels: labels,
+        selectedIndex: 0,
+        onSelected: (i) {
+          if (i <= 0) {
             onChanged([]);
           } else {
-            onChanged([v]);
+            onChanged([boardMms[i - 1]]);
           }
         },
       );
     }
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          for (var i = 0; i < layers.length; i++) ...[
-            if (i > 0) const SizedBox(width: 6),
-            DropdownButton<double?>(
-              value: layers[i],
-              items: [
-                const DropdownMenuItem<double?>(
-                  value: null,
-                  child: Text('なし'),
-                ),
-                for (final mm in boardMms)
-                  DropdownMenuItem<double?>(
-                    value: mm,
-                    child: Text(_mmLabel(mm)),
-                  ),
-              ],
-              onChanged: (v) {
-                if (v == null) {
-                  // なし → 全層クリア
-                  onChanged([]);
-                  return;
-                }
-                final next = [...layers];
-                next[i] = v;
-                onChanged(next);
-              },
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var i = 0; i < layers.length; i++) ...[
+          if (i > 0) const SizedBox(height: 8),
+          LockableCupertinoPicker(
+            label: Ms.of(context).layerN(i + 1),
+            labels: labels,
+            selectedIndex: () {
+              final j = boardMms.indexOf(layers[i]);
+              return j >= 0 ? j + 1 : 0;
+            }(),
+            onSelected: (sel) {
+              if (sel <= 0) {
+                onChanged([]);
+                return;
+              }
+              final next = [...layers];
+              next[i] = boardMms[sel - 1];
+              onChanged(next);
+            },
+          ),
+        ],
+        Row(
+          children: [
+            TextButton.icon(
+              onPressed: () => onChanged([...layers, layers.last]),
+              icon: const Icon(Icons.add_circle, color: AppTheme.navy),
+              label: Text(Ms.of(context).addLayer),
             ),
-            if (i == layers.length - 1) ...[
-              const SizedBox(width: 4),
-              IconButton(
-                tooltip: '層を追加',
-                onPressed: () => onChanged([...layers, layers.last]),
-                icon: const Icon(Icons.add_circle, color: AppTheme.navy),
-              ),
-            ],
-            if (layers.length > 1 && i == layers.length - 1)
-              IconButton(
-                tooltip: '層を削除',
+            if (layers.length > 1)
+              TextButton.icon(
                 onPressed: () =>
                     onChanged(layers.sublist(0, layers.length - 1)),
                 icon: const Icon(Icons.remove_circle_outline,
                     color: AppTheme.danger),
+                label: Text(Ms.of(context).deleteLayer),
               ),
           ],
-        ],
-      ),
+        ),
+      ],
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final bottom = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
-      padding: EdgeInsets.only(bottom: bottom),
+    return KeyboardDoneScope(
       child: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
@@ -359,188 +392,70 @@ class _WallMaterialSheetState extends State<WallMaterialSheet> {
                   ),
                 ),
               ),
-              Text(
-                '材料寸法設定  #${widget.wallNumber}',
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      Ms.of(context).basicSettings,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  _crossDedicatedButton(),
+                ],
               ),
               const SizedBox(height: 16),
-              _sectionTitle('壁高さ'),
+              _sectionTitle(Ms.of(context).wallHeightShort),
               TextField(
                 controller: _height,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(
-                  labelText: '壁高さ (mm)',
-                  hintText: '例: 2700',
+                keyboardType: DoneKeyboard.decimal,
+                inputFormatters: DoneKeyboard.decimalFormatters,
+                textInputAction: DoneKeyboard.action,
+                onSubmitted: DoneKeyboard.onSubmitted,
+                decoration: InputDecoration(
+                  labelText: Ms.of(context).heightMm,
+                  hintText: '2700',
                   suffixText: 'mm',
                   border: OutlineInputBorder(),
                   isDense: true,
                 ),
                 onChanged: (_) => setState(() {}),
               ),
-              const SizedBox(height: 16),
-              Row(
+              const SizedBox(height: 8),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text(
-                    '鉄板',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w800,
-                      fontSize: 15,
-                    ),
+                  _sectionTitle(Ms.of(context).faceB),
+                  _thicknessRow(
+                    layers: _boardB,
+                    onChanged: (v) => setState(() => _boardB = v),
                   ),
-                  const Spacer(),
-                  if (_useIronPlate) ...[
-                    Text(
-                      _measuredLengthLabel,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w800,
-                        color: AppTheme.navy,
-                      ),
-                    ),
-                    const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 4),
-                      child: Text(
-                        '×',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                    ),
-                    DropdownButton<int?>(
-                      value: _ironPlateSegments,
-                      hint: const Text('無', style: TextStyle(fontSize: 13)),
-                      underline: const SizedBox.shrink(),
-                      items: [
-                        const DropdownMenuItem<int?>(
-                          value: null,
-                          child: Text('無'),
-                        ),
-                        for (var n = 2; n <= 7; n++)
-                          DropdownMenuItem<int?>(
-                            value: n,
-                            child: Text('$n段'),
-                          ),
-                      ],
-                      onChanged: (v) =>
-                          setState(() => _ironPlateSegments = v),
-                    ),
-                    const SizedBox(width: 4),
-                  ],
-                  Checkbox(
-                    value: _useIronPlate,
-                    onChanged: (v) => _setIronPlate(v ?? false),
+                  const SizedBox(height: 16),
+                  _sectionTitle('LGS'),
+                  LockableCupertinoPicker(
+                    label: Ms.of(context).runnerW,
+                    labels: [for (final mm in lgsMms) _mmLabel(mm)],
+                    selectedIndex:
+                        lgsMms.indexOf(_runner).clamp(0, lgsMms.length - 1),
+                    onSelected: (i) => setState(() => _runner = lgsMms[i]),
+                  ),
+                  const SizedBox(height: 8),
+                  LockableCupertinoPicker(
+                    label: Ms.of(context).squareStud,
+                    labels: [for (final mm in lgsMms) _mmLabel(mm)],
+                    selectedIndex:
+                        lgsMms.indexOf(_stud).clamp(0, lgsMms.length - 1),
+                    onSelected: (i) => setState(() => _stud = lgsMms[i]),
+                  ),
+                  const SizedBox(height: 16),
+                  _sectionTitle(Ms.of(context).faceA),
+                  _thicknessRow(
+                    layers: _boardA,
+                    onChanged: (v) => setState(() => _boardA = v),
                   ),
                 ],
-              ),
-              if (_useIronPlate)
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 8),
-                  child: Text(
-                    '鉄板ON：A面・B面ボードとLGSをオフ。工法は鉄板のみ積算',
-                    style: TextStyle(fontSize: 11, color: AppTheme.steel),
-                  ),
-                ),
-              const SizedBox(height: 8),
-              IgnorePointer(
-                ignoring: _useIronPlate,
-                child: Opacity(
-                  opacity: _useIronPlate ? 0.35 : 1,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _sectionTitle('B面ボード'),
-                      _thicknessRow(
-                        layers: _boardB,
-                        onChanged: (v) => setState(() => _boardB = v),
-                      ),
-                      const SizedBox(height: 16),
-                      _sectionTitle('LGS'),
-                      if (_useIronPlate)
-                        const Padding(
-                          padding: EdgeInsets.only(bottom: 8),
-                          child: Text(
-                            'なし（オフ）',
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w700,
-                              color: AppTheme.steel,
-                            ),
-                          ),
-                        )
-                      else
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text('ランナー幅',
-                                      style: TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w700)),
-                                  DropdownButton<double>(
-                                    isExpanded: true,
-                                    value: _runner,
-                                    items: [
-                                      for (final mm in lgsMms)
-                                        DropdownMenuItem(
-                                          value: mm,
-                                          child: Text(_mmLabel(mm)),
-                                        ),
-                                    ],
-                                    onChanged: (v) {
-                                      if (v != null) {
-                                        setState(() => _runner = v);
-                                      }
-                                    },
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(width: 16),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text('スタッド',
-                                      style: TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w700)),
-                                  DropdownButton<double>(
-                                    isExpanded: true,
-                                    value: _stud,
-                                    items: [
-                                      for (final mm in lgsMms)
-                                        DropdownMenuItem(
-                                          value: mm,
-                                          child: Text(_mmLabel(mm)),
-                                        ),
-                                    ],
-                                    onChanged: (v) {
-                                      if (v != null) {
-                                        setState(() => _stud = v);
-                                      }
-                                    },
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      const SizedBox(height: 16),
-                      _sectionTitle('A面ボード'),
-                      _thicknessRow(
-                        layers: _boardA,
-                        onChanged: (v) => setState(() => _boardA = v),
-                      ),
-                    ],
-                  ),
-                ),
               ),
               const SizedBox(height: 24),
               ElevatedButton(
@@ -550,32 +465,21 @@ class _WallMaterialSheetState extends State<WallMaterialSheet> {
                         final r = _result(WallMaterialAction.methodSelect);
                         if (r != null) Navigator.pop(context, r);
                       },
-                child: const Text('工法選択 → 試算表'),
+                child: Text(Ms.of(context).goMaterialPage),
               ),
               const SizedBox(height: 8),
               OutlinedButton(
-                onPressed: () {
-                  Navigator.pop(
-                    context,
-                    WallMaterialResult(
-                      method: _buildMethod(),
-                      action: WallMaterialAction.delete,
-                      heightMm: _parsedHeight ??
-                          widget.initialHeightMm ??
-                          2700,
-                    ),
-                  );
-                },
+                onPressed: _confirmDeleteLine,
                 style: OutlinedButton.styleFrom(
                   foregroundColor: AppTheme.danger,
                   side: const BorderSide(color: AppTheme.danger),
                 ),
-                child: const Text('この線を削除'),
+                child: Text(Ms.of(context).deleteThisLine),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(context),
-                child: const Text('キャンセル',
-                    style: TextStyle(color: AppTheme.steel)),
+                child: Text(S.of(context).cancel,
+                    style: const TextStyle(color: AppTheme.steel)),
               ),
             ],
           ),

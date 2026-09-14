@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import '../models/models.dart';
 import 'board_spec_parse.dart';
+import 'ceiling_layout.dart';
 import 'opening_reinforce.dart';
 
 /// LGS / ボード / クロス自動積算エンジン
@@ -127,6 +128,7 @@ class CalcEngine {
     required double scalePxPerMm,
     required WallMethod method,
     List<WallOpening> openings = const [],
+    double? ironPlateRunMm,
   }) {
     final pts = points ??
         (a != null && b != null ? [a, b] : <Point2>[]);
@@ -207,6 +209,7 @@ class CalcEngine {
       'wall_height_mm': heightMm,
       'wall_area_m2': lgsAreaM2,
       'wall_gross_area_m2': areaM2,
+      'wall_net_area_m2': netAreaM2,
       'opening_area_m2': openingAreaM2,
       'corner_count': cornerCount.toDouble(),
       if (junctions > 0) 'junction_count': junctions.toDouble(),
@@ -377,40 +380,37 @@ class CalcEngine {
           netAreaM2 > 0 ? netAreaM2 / 0.91 : 0.0;
     }
 
-    // 鉄板：測定延長（×段数）÷定尺長さ → 片数
-    if (method.useIronPlate && method.ironPlateLengthMm > 0 && lengthMm > 0) {
-      final seg = method.ironPlateSegments >= 2 ? method.ironPlateSegments : 1;
-      final runMm = lengthMm * seg;
+    // 鉄板：T線の全長（×段数）÷定尺。壁の画線長は使わない
+    final ironMm = ironPlateRunMm ?? 0;
+    if (method.useIronPlate && method.ironPlateLengthMm > 0 && ironMm > 0) {
+      final seg = method.ironPlateSegmentCount;
+      final runMm = ironMm * seg;
       final sheets = (runMm / method.ironPlateLengthMm).ceilToDouble();
       out['iron_plate_sheets'] = sheets < 1 ? 1.0 : sheets;
       out['iron_plate_width_mm'] = method.ironPlateWidthMm;
       out['iron_plate_length_mm'] = method.ironPlateLengthMm;
       out['iron_plate_run_mm'] = runMm;
+      out['iron_plate_measure_mm'] = ironMm;
       out['iron_plate_segments'] = seg.toDouble();
     }
 
     // 開口補強
     if (openings.isNotEmpty) {
-      var reinforceBars = 0;
-      var openingRunnerMm = 0.0;
       final stock = method.reinforceLengthMm > 0
           ? method.reinforceLengthMm
           : (method.studLengthMm > 0 ? method.studLengthMm : heightMm);
+      final reinforceList = [
+        for (final o in openings)
+          if (o.material == OpeningMaterialKind.reinforce) o,
+      ];
+      final reinforceBars = OpeningReinforceCalc.reinforceBarsForOpenings(
+        openings: reinforceList,
+        stockLengthMm: stock,
+      );
+      var openingRunnerMm = 0.0;
       for (final o in openings) {
-        OpeningReinforcePattern pattern;
-        try {
-          pattern = OpeningReinforcePattern.values.byName(o.patternName);
-        } catch (_) {
-          pattern = OpeningReinforcePattern.redOrange;
-        }
-        if (o.material == OpeningMaterialKind.reinforce) {
-          reinforceBars += OpeningReinforceCalc.reinforceBars(
-            pattern: pattern,
-            magusaSegments: o.magusaSegments,
-            openingWidthMm: o.widthMm,
-            stockLengthMm: stock,
-          );
-        } else {
+        final pattern = OpeningReinforcePatternX.parse(o.patternName);
+        if (o.material != OpeningMaterialKind.reinforce) {
           openingRunnerMm += OpeningReinforceCalc.runnerMm(
             pattern: pattern,
             magusaSegments: o.magusaSegments,
@@ -430,6 +430,23 @@ class CalcEngine {
         out['opening_runner_mm'] = openingRunnerMm;
         out['opening_runner_m'] = openingRunnerMm / 1000.0;
       }
+
+      // アングルピース：図形線本数×2（オプションON時）
+      if (method.useAnglePiece) {
+        var anglePcs = 0;
+        for (final o in openings) {
+          final pattern = OpeningReinforcePatternX.parse(o.patternName);
+          anglePcs += OpeningReinforceCalc.anglePieces(
+            pattern: pattern,
+            magusaSegments: o.magusaSegments,
+          );
+        }
+        if (anglePcs > 0) {
+          out['angle_piece_count'] = anglePcs.toDouble();
+          out['angle_piece_mm'] =
+              method.anglePieceMm > 0 ? method.anglePieceMm : 50;
+        }
+      }
     }
 
     // グラスウール等（壁面積 m²）— ボード有無に関わらず（芯材入力の互換）
@@ -447,9 +464,15 @@ class CalcEngine {
       }
     }
 
-    if (method.useCross) {
-      final width = method.crossWidthM <= 0 ? 0.9 : method.crossWidthM;
-      final waste = 1.0 + method.crossWasteRate;
+    if (method.useCross || method.crossDedicated.enabled) {
+      final width = method.crossDedicated.enabled
+          ? (method.crossDedicated.crossWidthM > 0
+              ? method.crossDedicated.crossWidthM
+              : 0.9)
+          : (method.crossWidthM <= 0 ? 0.9 : method.crossWidthM);
+      final waste = method.crossDedicated.enabled
+          ? 1.0
+          : (1.0 + method.crossWasteRate);
       final meters = (netAreaM2 / width) * waste;
       out['cross_m'] = meters;
     }
@@ -481,49 +504,156 @@ class CalcEngine {
     final tsubo = areaM2 / 3.305785;
     final jo = areaM2 / 1.62;
 
-    // 外周長
     var periPx = 0.0;
     for (var i = 0; i < points.length; i++) {
       periPx += distPx(points[i], points[(i + 1) % points.length]);
     }
     final periMm = pxToMm(periPx, scalePxPerMm);
 
-    // 簡易矩形近似で骨格長を推定
-    final bbox = _bbox(points);
-    final wMm = pxToMm(bbox.$1, scalePxPerMm);
-    final hMm = pxToMm(bbox.$2, scalePxPerMm);
-
-    final noenPitch = method.rotated90 ? method.noenuKeSpacingMm : method.noenSpacingMm;
-    final ukePitch = method.rotated90 ? method.noenSpacingMm : method.noenuKeSpacingMm;
-
-    // Mバー（野縁）本数・長さ
-    final mCount = math.max(2, (hMm / noenPitch).floor() + 1);
-    final mLengthM = (mCount * wMm) / 1000.0;
-
-    // CWバー（野縁受け）
-    final cwCount = math.max(2, (wMm / ukePitch).floor() + 1);
-    final cwLengthM = (cwCount * hMm) / 1000.0;
-
-    // 吊りボルト：約900mm格子
-    final hangX = math.max(1, (wMm / 900).ceil());
-    final hangY = math.max(1, (hMm / 900).ceil());
-    final hangers = hangX * hangY;
+    final layout = CeilingLayoutEngine.layout(
+      points: points,
+      scalePxPerMm: scalePxPerMm,
+      method: method,
+    );
 
     final (bw, bh) = boardMm(method.boardSize);
     final boardArea = (bw / 1000.0) * (bh / 1000.0);
-    final layers = method.layers.count;
-    final sheets = (areaM2 * layers / boardArea).ceilToDouble();
+    final finishLayers = method.finishBoardLayers;
+    double sheets;
+    int layerCount;
+    if (finishLayers.isNotEmpty) {
+      layerCount = finishLayers.length;
+      sheets = 0;
+      for (final layer in finishLayers) {
+        final a = (layer.widthMm / 1000.0) * (layer.heightMm / 1000.0);
+        if (a > 0) sheets += (areaM2 / a).ceilToDouble();
+      }
+    } else {
+      layerCount = method.layers.count;
+      sheets = boardArea > 0
+          ? (areaM2 * layerCount / boardArea).ceilToDouble()
+          : 0.0;
+    }
 
     return {
       'ceiling_area_m2': areaM2,
       'ceiling_area_tsubo': tsubo,
       'ceiling_area_jo': jo,
       'perimeter_mm': periMm,
-      'm_bar_m': mLengthM,
-      'cw_bar_m': cwLengthM,
-      'hanger_count': hangers.toDouble(),
+      'w_bar_m': layout.wBarLengthM,
+      'single_bar_m': layout.singleBarLengthM,
+      'uke_bar_m': layout.ukeBarLengthM,
+      'square_stud_m': layout.squareStudLengthM,
+      // 互換キー
+      'm_bar_m': layout.singleBarLengthM,
+      'cw_bar_m': layout.ukeBarLengthM,
+      'hanger_count': layout.boltCount.toDouble(),
+      'bolt_count': layout.boltCount.toDouble(),
+      'nut_count': (method.nutCountOverride ?? (layout.boltCount * 2)).toDouble(),
+      'hanger_piece_count':
+          (method.hangerCountOverride ?? layout.boltCount).toDouble(),
+      'uke_channel_width_mm': method.ukeChannelWidthMm,
+      'uke_channel_length_mm': method.ukeChannelLengthMm,
+      'uke_channel_count': CeilingLayoutEngine.countUkeChannelPieces(
+        ukeLengthsMm: [
+          for (final b in layout.ukeBars)
+            b.lengthPx / scalePxPerMm,
+        ],
+        stockLengthMm: method.ukeChannelLengthMm,
+      ).toDouble(),
+      'channel_joint_count': CeilingLayoutEngine.countSpliceJoints(
+        lengthsMm: [
+          for (final b in layout.ukeBars) b.lengthPx / scalePxPerMm,
+        ],
+        stockLengthMm: method.ukeChannelLengthMm,
+      ).toDouble(),
+      'w_bar_count': CeilingLayoutEngine.countUkeChannelPieces(
+        ukeLengthsMm: [
+          for (final b in layout.noenBars)
+            if (b.isW && !b.isUke) b.lengthPx / scalePxPerMm,
+        ],
+        stockLengthMm: method.wBarLengthMm,
+      ).toDouble(),
+      'single_bar_count': CeilingLayoutEngine.countUkeChannelPieces(
+        ukeLengthsMm: [
+          for (final b in layout.noenBars)
+            if (!b.isW && !b.isUke) b.lengthPx / scalePxPerMm,
+        ],
+        stockLengthMm: method.singleBarLengthMm,
+      ).toDouble(),
+      'w_bar_joint_count': CeilingLayoutEngine.countSpliceJoints(
+        lengthsMm: [
+          for (final b in layout.noenBars)
+            if (b.isW && !b.isUke) b.lengthPx / scalePxPerMm,
+        ],
+        stockLengthMm: method.wBarLengthMm,
+      ).toDouble(),
+      'single_bar_joint_count': CeilingLayoutEngine.countSpliceJoints(
+        lengthsMm: [
+          for (final b in layout.noenBars)
+            if (!b.isW && !b.isUke) b.lengthPx / scalePxPerMm,
+        ],
+        stockLengthMm: method.singleBarLengthMm,
+      ).toDouble(),
+      'w_clip_count': () {
+        final wBars = [
+          for (final b in layout.noenBars)
+            if (b.isW && !b.isUke) b,
+        ];
+        return CeilingLayoutEngine.countBarCrossings(wBars, layout.ukeBars)
+            .toDouble();
+      }(),
+      'single_clip_count': () {
+        final sBars = [
+          for (final b in layout.noenBars)
+            if (!b.isW && !b.isUke) b,
+        ];
+        return CeilingLayoutEngine.countBarCrossings(sBars, layout.ukeBars)
+            .toDouble();
+      }(),
+      'mikiri_count': method.mikiriEnabled && method.mikiriLengthMm > 0
+          ? (periMm / method.mikiriLengthMm).ceilToDouble()
+          : 0.0,
+      'sq_stud_type': double.tryParse(method.sqStudType) ?? 0,
+      'sq_stud_length_mm': method.sqStudLengthMm,
+      'sq_stud_count': CeilingLayoutEngine.countUkeChannelPieces(
+        ukeLengthsMm: [
+          for (final b in layout.squareStudBars)
+            b.lengthPx / scalePxPerMm,
+        ],
+        stockLengthMm: method.sqStudLengthMm,
+      ).toDouble(),
+      'clip_uke_label': method.clipUkeLabel == 'C19'
+          ? 19
+          : method.clipUkeLabel == 'C25'
+              ? 25
+              : 38,
+      'clip_type': double.tryParse(method.clipType) ?? 0,
+      'clip_count': layout.squareStudUkeContactCount.toDouble(),
+      'runner_width_mm': method.runnerWidthMm,
+      'runner_length_mm': method.runnerLengthMm,
+      'runner_edge_mm': CeilingLayoutEngine.runnerPerpEdgeLengthMm(
+        points: points,
+        scalePxPerMm: scalePxPerMm,
+        method: method,
+        squareStudBars: layout.squareStudBars,
+      ),
+      'runner_count': CeilingLayoutEngine.countRunnerPieces(
+        edgeTotalMm: CeilingLayoutEngine.runnerPerpEdgeLengthMm(
+          points: points,
+          scalePxPerMm: scalePxPerMm,
+          method: method,
+          squareStudBars: layout.squareStudBars,
+        ),
+        stockLengthMm: method.runnerLengthMm,
+      ).toDouble(),
+      'hanger_bolt_w38': method.hangerBoltWidthLabel == 'W1/2' ? 0.5 : 0.375,
+      'hanger_uke_width_mm': method.hangerUkeWidthMm,
+      'hanger_fixture_height_mm': method.hangerFixtureHeightMm,
+      'bolt_width_label': method.boltWidthLabel == 'W1/2' ? 0.5 : 0.375,
+      'bolt_length_mm': method.boltLengthMm,
       'board_sheets': sheets,
-      'board_layers': layers.toDouble(),
+      'board_layers': layerCount.toDouble(),
       'screw_boxes': math.max(1, (sheets * 50 / 1000).ceil()).toDouble(),
     };
   }
@@ -621,18 +751,23 @@ class CalcEngine {
       }
       for (final c in m.ceilings) {
         final q = c.quantities;
-        if (q.containsKey('m_bar_m')) {
-          add('天井 Mバー（野縁）', 'm', q['m_bar_m']!);
+        if ((q['w_bar_m'] ?? 0) > 0) {
+          add('Wバー（野縁）', 'm', q['w_bar_m']!);
         }
-        if (q.containsKey('cw_bar_m')) {
-          add('天井 CWバー（野縁受け）', 'm', q['cw_bar_m']!);
+        if ((q['single_bar_m'] ?? 0) > 0) {
+          add('シングルバー（野縁）', 'm', q['single_bar_m']!);
+        } else if ((q['m_bar_m'] ?? 0) > 0) {
+          add('Mバー（野縁）', 'm', q['m_bar_m']!);
+        }
+        if ((q['uke_bar_m'] ?? q['cw_bar_m'] ?? 0) > 0) {
+          add('野縁受け', 'm', (q['uke_bar_m'] ?? q['cw_bar_m'])!);
         }
         if (q.containsKey('hanger_count')) {
-          add('吊りボルト', '本', q['hanger_count']!);
+          add('全ネジボルト', '本', q['hanger_count']!);
         }
         if (q.containsKey('board_sheets')) {
           final layers = (q['board_layers'] ?? 1).round();
-          add('石膏ボード（天井・${layers}層）', '枚', q['board_sheets']!);
+          add('石膏ボード（${layers}層）', '枚', q['board_sheets']!);
         }
       }
     }
