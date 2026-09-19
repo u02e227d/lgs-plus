@@ -331,8 +331,12 @@ class CalcEngine {
       out['board_thickness_b_mm'] = method.effectiveBoardBMm;
       out['board_sides'] = 1.0 + (method.bothSides ? 1.0 : 0.0);
       out['screw_boxes'] = math.max(1, (sheets * 50 / 1000).ceil()).toDouble();
+      // 仕上壁厚 = ランナー幅 + ボード（スタッド幅ではない）
+      final runnerW = method.runnerWidthMm > 0
+          ? method.runnerWidthMm
+          : method.studWidthMm;
       out['finished_thickness_mm'] =
-          method.studWidthMm + method.effectiveBoardAMm + method.effectiveBoardBMm;
+          runnerW + method.effectiveBoardAMm + method.effectiveBoardBMm;
 
       countByThickness(layersA, sizesA);
       if (method.bothSides) countByThickness(layersB, sizesB);

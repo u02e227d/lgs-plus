@@ -72,32 +72,44 @@ class WallHighlightColors {
   static const int defaultArgb = 0xFFFFEB3B;
 }
 
-/// 線末の番号バッジヒット
+/// 線末の番号バッジヒット（[hitRect] があるときはチップ全体＝番号優先）
 class WallBadgeHit {
   WallBadgeHit({
     required this.wallId,
     required this.center,
     required this.number,
+    this.hitRect,
   });
   final String wallId;
+  /// 赤い番号円の中心（画像座標）
   final Offset center;
   final int number;
+  /// 番号＋数値チップ全体の当たり判定
+  final Rect? hitRect;
 
-  bool hit(Offset p, {double radius = 22}) => (p - center).distance <= radius;
+  bool hit(Offset p, {double radius = 22}) {
+    if (hitRect != null) return hitRect!.contains(p);
+    return (p - center).distance <= radius;
+  }
 }
 
-/// 下り線末の番号バッジヒット
+/// 下り線末の番号バッジヒット（[hitRect] があるときはチップ全体）
 class DropBadgeHit {
   DropBadgeHit({
     required this.dropId,
     required this.center,
     required this.number,
+    this.hitRect,
   });
   final String dropId;
   final Offset center;
   final int number;
+  final Rect? hitRect;
 
-  bool hit(Offset p, {double radius = 22}) => (p - center).distance <= radius;
+  bool hit(Offset p, {double radius = 22}) {
+    if (hitRect != null) return hitRect!.contains(p);
+    return (p - center).distance <= radius;
+  }
 }
 
 /// 第2折以降の「幅＋」ボタンヒット
@@ -120,21 +132,51 @@ class DropWidthPlusHit {
   bool hit(Offset p, {double radius = 20}) => (p - center).distance <= radius;
 }
 
-/// 天井面積番号バッジヒット
+/// 天井面積番号バッジヒット（[hitRect] があるときはチップ全体＝番号優先）
 class CeilingBadgeHit {
   CeilingBadgeHit({
     required this.ceilingId,
     required this.center,
     required this.number,
     this.radius = 28,
+    this.hitRect,
   });
   final String ceilingId;
+  /// 赤い番号円の中心（画像座標）
   final Offset center;
   final int number;
   final double radius;
+  /// 番号＋面積チップ全体の当たり判定
+  final Rect? hitRect;
 
-  bool hit(Offset p, {double? radius}) =>
-      (p - center).distance <= (radius ?? this.radius);
+  bool hit(Offset p, {double? radius}) {
+    if (hitRect != null) return hitRect!.contains(p);
+    return (p - center).distance <= (radius ?? this.radius);
+  }
+}
+
+/// Widget の [_NumberMetricChip] と同じレイアウトで番号円中心とヒット矩形を返す。
+/// [anchor] は Positioned の基準点（壁＝線尾、天井＝重心）。
+({Offset numberCenter, Rect hitRect}) numberMetricChipHit({
+  required Offset anchor,
+  required double inv,
+  required double metricWidth,
+}) {
+  final chipOrigin = Offset(anchor.dx - 52 * inv, anchor.dy - 16 * inv);
+  // padding(5,4) + 円26 → 番号中心は原点から (18, 17)
+  final numberCenter = Offset(
+    chipOrigin.dx + 18 * inv,
+    chipOrigin.dy + 17 * inv,
+  );
+  final chipW = (5 + 26 + 6 + metricWidth + 8).clamp(72.0, 180.0) * inv;
+  final chipH = 34 * inv;
+  final hitRect = Rect.fromLTWH(
+    chipOrigin.dx,
+    chipOrigin.dy,
+    chipW,
+    chipH,
+  ).inflate(6 * inv);
+  return (numberCenter: numberCenter, hitRect: hitRect);
 }
 
 /// 開口マーカーヒット
@@ -173,6 +215,8 @@ class OverlayMidPainter extends CustomPainter {
     this.dropWidthMeasureTip,
     this.dropWidthMeasureTurnIndex,
     this.ironDraft = false,
+    this.wallDraftFollowTip = false,
+    this.paintDropNumberBadges = true,
   });
 
   final List<LineSeg> snapLines;
@@ -193,6 +237,10 @@ class OverlayMidPainter extends CustomPainter {
   final int? dropWidthMeasureTurnIndex;
   /// 鉄板専用の画線ドラフトは点線
   final bool ironDraft;
+  /// 壁／天井／下りドラフト末尾が矢印追従中の先端点
+  final bool wallDraftFollowTip;
+  /// false＝画面は Widget チップ描画。PDF 書き出しは true。
+  final bool paintDropNumberBadges;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -256,13 +304,29 @@ class OverlayMidPainter extends CustomPainter {
       final draftColor = WallHighlightColors.ofArgb(
         draftFillArgb ?? WallHighlightColors.defaultArgb,
       );
+      final vs = viewScale <= 0.01 ? 1.0 : viewScale;
       final draftStroke = Paint()
         ..color = WallHighlightColors.solidOfArgb(draftFillArgb)
-        ..strokeWidth = 2.5
+        ..strokeWidth = math.max(1.2, 2.5 / vs)
         ..style = PaintingStyle.stroke
-        ..strokeJoin = StrokeJoin.round;
+        ..strokeJoin = StrokeJoin.round
+        ..strokeCap = StrokeCap.butt;
       final path = Path()..moveTo(ceilingDraft.first.dx, ceilingDraft.first.dy);
       for (var i = 1; i < ceilingDraft.length; i++) {
+        if (wallDraftFollowTip && i == ceilingDraft.length - 1) {
+          final a = ceilingDraft[i - 1];
+          final b = ceilingDraft[i];
+          final gap = 4.0 / vs;
+          final dist = (b - a).distance;
+          if (dist > gap) {
+            final t = 1.0 - gap / dist;
+            path.lineTo(
+              a.dx + (b.dx - a.dx) * t,
+              a.dy + (b.dy - a.dy) * t,
+            );
+          }
+          break;
+        }
         path.lineTo(ceilingDraft[i].dx, ceilingDraft[i].dy);
       }
 
@@ -299,6 +363,8 @@ class OverlayMidPainter extends CustomPainter {
       }
 
       for (var i = 0; i < ceilingDraft.length; i++) {
+        // 矢印追従の先端点は透明（ズームで青点が肥大化するため）
+        if (wallDraftFollowTip && i == ceilingDraft.length - 1) continue;
         final p = ceilingDraft[i];
         final isFirst = i == 0;
         canvas.drawCircle(
@@ -324,37 +390,52 @@ class OverlayMidPainter extends CustomPainter {
 
     // 鉄板ドラフトは上層で壁の上に描く
     if (!ironDraft && wallDraft.length >= 2) {
+      final vs = viewScale <= 0.01 ? 1.0 : viewScale;
+      // 画面上ほぼ一定の線幅（ズームで端が巨大な紺点に見えないように）
+      final draftStroke = math.max(1.2, 3.0 / vs);
       final p = Paint()
         ..color = AppTheme.navy
-        ..strokeWidth = 3
+        ..strokeWidth = draftStroke
         ..style = PaintingStyle.stroke
         ..strokeJoin = StrokeJoin.round
-        ..strokeCap = ironDraft ? StrokeCap.butt : StrokeCap.round;
+        // round 端点の丸＝紺点に見えるので常に butt。端点円は描かない（透明）
+        ..strokeCap = StrokeCap.butt;
       final path = Path()..moveTo(wallDraft.first.dx, wallDraft.first.dy);
       for (var i = 1; i < wallDraft.length; i++) {
-        path.lineTo(wallDraft[i].dx, wallDraft[i].dy);
-      }
-      if (ironDraft) {
-        _drawDashedPath(canvas, path, p, dash: 10, gap: 7);
-      } else {
-        canvas.drawPath(path, p);
-      }
-      for (var i = 0; i < wallDraft.length; i++) {
-        final isCorner = i > 0 && i < wallDraft.length - 1;
-        canvas.drawCircle(
-          wallDraft[i],
-          isCorner ? 7 : 5,
-          Paint()
-            ..color = isCorner ? const Color(0xFFE53935) : AppTheme.navy,
-        );
-        if (isCorner) {
-          for (var k = -1; k <= 1; k++) {
-            canvas.drawCircle(
-              wallDraft[i] + Offset(k * 5.0, -10),
-              2.2,
-              Paint()..color = AppTheme.safetyYellow,
+        if (wallDraftFollowTip && i == wallDraft.length - 1) {
+          // 矢印先端の直下に線端が乗らないよう、画面数 px 手前で止める
+          final a = wallDraft[i - 1];
+          final b = wallDraft[i];
+          final gap = 4.0 / vs;
+          final dist = (b - a).distance;
+          if (dist > gap) {
+            final t = 1.0 - gap / dist;
+            path.lineTo(
+              a.dx + (b.dx - a.dx) * t,
+              a.dy + (b.dy - a.dy) * t,
             );
           }
+          break;
+        }
+        path.lineTo(wallDraft[i].dx, wallDraft[i].dy);
+      }
+      canvas.drawPath(path, p);
+      for (var i = 0; i < wallDraft.length; i++) {
+        final isCorner = i > 0 && i < wallDraft.length - 1;
+        final isLiveTip = wallDraftFollowTip && i == wallDraft.length - 1;
+        // 紺の端点・追従先端は透明。折点の赤だけ残す。
+        if (isLiveTip || !isCorner) continue;
+        canvas.drawCircle(
+          wallDraft[i],
+          7.0,
+          Paint()..color = const Color(0xFFE53935),
+        );
+        for (var k = -1; k <= 1; k++) {
+          canvas.drawCircle(
+            wallDraft[i] + Offset(k * 5.0, -10),
+            2.2,
+            Paint()..color = AppTheme.safetyYellow,
+          );
         }
       }
       // 区間距離ラベル
@@ -367,7 +448,7 @@ class OverlayMidPainter extends CustomPainter {
         );
       }
     } else if (!ironDraft && wallDraft.length == 1) {
-      canvas.drawCircle(wallDraft.first, 5, Paint()..color = AppTheme.navy);
+      // 紺点は透明（非表示）
     }
 
     // 確定済み下り（破線＋線尾番号）
@@ -437,48 +518,81 @@ class OverlayMidPainter extends CustomPainter {
         );
       }
       final tip = Offset(d.points.last.x, d.points.last.y);
-      const r = 16.0;
-      canvas.drawCircle(tip, r, Paint()..color = c);
-      canvas.drawCircle(
-        tip,
-        r,
-        Paint()
-          ..color = Colors.white
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2,
-      );
-      final tp = TextPainter(
-        text: TextSpan(
-          text: '${d.groupNumber}',
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 14,
-            fontWeight: FontWeight.w900,
+      final lenMm = d.lengthMm > 0
+          ? d.lengthMm
+          : (d.quantities['drop_length_mm'] as num?)?.toDouble() ?? 0;
+      final lenText = lenMm > 0 ? distanceLabelText(lenMm) : '—';
+      if (paintDropNumberBadges) {
+        paintNumberMetricCanvasLabel(
+          canvas,
+          at: tip,
+          number: d.groupNumber,
+          metricText: lenText,
+          viewScale: viewScale,
+        );
+      }
+      // ヒットは画面側 Widget チップと揃える（PDF 時はバッジ中心のみ）
+      if (dropBadgeHits != null) {
+        final inv = 1.0 / viewScale.clamp(0.35, 5.0);
+        final metricTp = TextPainter(
+          text: TextSpan(
+            text: lenText,
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w800,
+            ),
           ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      tp.paint(canvas, tip - Offset(tp.width / 2, tp.height / 2));
-      dropBadgeHits?.add(
-        DropBadgeHit(dropId: d.id, center: tip, number: d.groupNumber),
-      );
+          textDirection: TextDirection.ltr,
+        )..layout();
+        final chipHit = numberMetricChipHit(
+          anchor: tip,
+          inv: inv,
+          metricWidth: metricTp.width,
+        );
+        dropBadgeHits!.add(
+          DropBadgeHit(
+            dropId: d.id,
+            center: chipHit.numberCenter,
+            number: d.groupNumber,
+            hitRect: chipHit.hitRect,
+          ),
+        );
+      }
     }
 
     // 下りドラフト（破線・第1区間＝幅、以降＝長さ）
     if (dropDraft.isNotEmpty) {
       final c = WallHighlightColors.solidOfArgb(draftFillArgb);
+      final vs = viewScale <= 0.01 ? 1.0 : viewScale;
       final path = Path()..moveTo(dropDraft.first.dx, dropDraft.first.dy);
       for (var i = 1; i < dropDraft.length; i++) {
+        if (wallDraftFollowTip && i == dropDraft.length - 1) {
+          final a = dropDraft[i - 1];
+          final b = dropDraft[i];
+          final gap = 4.0 / vs;
+          final dist = (b - a).distance;
+          if (dist > gap) {
+            final t = 1.0 - gap / dist;
+            path.lineTo(
+              a.dx + (b.dx - a.dx) * t,
+              a.dy + (b.dy - a.dy) * t,
+            );
+          }
+          break;
+        }
         path.lineTo(dropDraft[i].dx, dropDraft[i].dy);
       }
       final stroke = Paint()
         ..color = c
-        ..strokeWidth = 3
+        ..strokeWidth = math.max(1.2, 3.0 / vs)
         ..style = PaintingStyle.stroke
-        ..strokeJoin = StrokeJoin.round;
+        ..strokeJoin = StrokeJoin.round
+        ..strokeCap = StrokeCap.butt;
       _drawDashedPath(canvas, path, stroke, dash: 10, gap: 8);
-      for (final p in dropDraft) {
-        canvas.drawCircle(p, 6, Paint()..color = c);
+      for (var i = 0; i < dropDraft.length; i++) {
+        // 矢印追従の先端点は透明
+        if (wallDraftFollowTip && i == dropDraft.length - 1) continue;
+        canvas.drawCircle(dropDraft[i], 6, Paint()..color = c);
       }
       for (var i = 0; i < dropDraft.length - 1; i++) {
         _drawDistanceLabel(
@@ -586,6 +700,7 @@ class OverlayTopPainter extends CustomPainter {
     this.paintCeilingLabels = true,
     this.ironDraft = false,
     this.wallDraft = const [],
+    this.wallDraftFollowTip = false,
     this.showLgsPreview = true,
   });
 
@@ -604,6 +719,7 @@ class OverlayTopPainter extends CustomPainter {
   final bool paintCeilingLabels;
   final bool ironDraft;
   final List<Offset> wallDraft;
+  final bool wallDraftFollowTip;
   /// 無料版は天井LGS効果図・壁スタッド点を出さない
   final bool showLgsPreview;
 
@@ -710,29 +826,60 @@ class OverlayTopPainter extends CustomPainter {
       final num = wallNo;
       final label = iron ? 'T' : '$num';
       final solid = WallHighlightColors.solidOfArgb(w.highlightArgb);
-      const r = 16.0;
-      canvas.drawCircle(tip, r, Paint()..color = solid);
-      canvas.drawCircle(
-        tip,
-        r,
-        Paint()
-          ..color = Colors.white
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2,
-      );
-      final tp = TextPainter(
-        text: TextSpan(
-          text: label,
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: iron ? 16 : 14,
-            fontWeight: FontWeight.w900,
+      // 通常壁の番号＋長さは Widget オーバーレイ（天井と同サイズ）。鉄板Tだけ円を描く。
+      if (iron) {
+        const r = 16.0;
+        canvas.drawCircle(tip, r, Paint()..color = solid);
+        canvas.drawCircle(
+          tip,
+          r,
+          Paint()
+            ..color = Colors.white
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2,
+        );
+        final tp = TextPainter(
+          text: TextSpan(
+            text: label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.w900,
+            ),
           ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      tp.paint(canvas, tip - Offset(tp.width / 2, tp.height / 2));
-      badgeHits?.add(WallBadgeHit(wallId: w.id, center: tip, number: num));
+          textDirection: TextDirection.ltr,
+        )..layout();
+        tp.paint(canvas, tip - Offset(tp.width / 2, tp.height / 2));
+        badgeHits?.add(WallBadgeHit(wallId: w.id, center: tip, number: num));
+      } else {
+        // ヒットは赤い番号円を中心に、チップ全体（番号＋数値）を覆う
+        final inv = 1.0 / (viewScale <= 0.01 ? 1.0 : viewScale).clamp(0.35, 5.0);
+        final lenMm = scalePxPerMm > 0 ? wallDrawnLengthMm(w, scalePxPerMm) : 0.0;
+        final lenText = lenMm > 0 ? distanceLabelText(lenMm) : '—';
+        final metricTp = TextPainter(
+          text: TextSpan(
+            text: lenText,
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        final chipHit = numberMetricChipHit(
+          anchor: tip,
+          inv: inv,
+          metricWidth: metricTp.width,
+        );
+        badgeHits?.add(
+          WallBadgeHit(
+            wallId: w.id,
+            center: chipHit.numberCenter,
+            number: num,
+            hitRect: chipHit.hitRect,
+          ),
+        );
+      }
       if (iron && scalePxPerMm > 0) {
         final totalMm = ironPlateLengthMm(w, scalePxPerMm);
         if (totalMm > 0) {
@@ -891,15 +1038,30 @@ class OverlayTopPainter extends CustomPainter {
     }
 
     if (ironDraft && wallDraft.isNotEmpty) {
+      final vs = viewScale <= 0.01 ? 1.0 : viewScale;
       final draftPaint = Paint()
         ..color = AppTheme.navy
-        ..strokeWidth = 3
+        ..strokeWidth = math.max(1.2, 3.0 / vs)
         ..style = PaintingStyle.stroke
         ..strokeJoin = StrokeJoin.round
         ..strokeCap = StrokeCap.butt;
       if (wallDraft.length >= 2) {
         final path = Path()..moveTo(wallDraft.first.dx, wallDraft.first.dy);
         for (var i = 1; i < wallDraft.length; i++) {
+          if (wallDraftFollowTip && i == wallDraft.length - 1) {
+            final a = wallDraft[i - 1];
+            final b = wallDraft[i];
+            final gap = 4.0 / vs;
+            final dist = (b - a).distance;
+            if (dist > gap) {
+              final t = 1.0 - gap / dist;
+              path.lineTo(
+                a.dx + (b.dx - a.dx) * t,
+                a.dy + (b.dy - a.dy) * t,
+              );
+            }
+            break;
+          }
           path.lineTo(wallDraft[i].dx, wallDraft[i].dy);
         }
         _drawDashedPath(canvas, path, draftPaint, dash: 10, gap: 7);
@@ -914,11 +1076,13 @@ class OverlayTopPainter extends CustomPainter {
       }
       for (var i = 0; i < wallDraft.length; i++) {
         final isCorner = i > 0 && i < wallDraft.length - 1;
+        final isLiveTip = wallDraftFollowTip && i == wallDraft.length - 1;
+        // 紺端点は透明。折点赤のみ
+        if (isLiveTip || !isCorner) continue;
         canvas.drawCircle(
           wallDraft[i],
-          isCorner ? 7 : 5,
-          Paint()
-            ..color = isCorner ? const Color(0xFFE53935) : AppTheme.navy,
+          7.0,
+          Paint()..color = const Color(0xFFE53935),
         );
       }
     }
@@ -977,10 +1141,11 @@ class OverlayTopPainter extends CustomPainter {
         ax = nx;
         ay = ny;
     }
+    final runnerW = w.method.runnerWidthMm > 0
+        ? w.method.runnerWidthMm
+        : w.method.studWidthMm;
     final thickMm = w.quantities['finished_thickness_mm'] ??
-        (w.method.studWidthMm +
-            w.method.effectiveBoardAMm +
-            w.method.effectiveBoardBMm);
+        (runnerW + w.method.effectiveBoardAMm + w.method.effectiveBoardBMm);
     final half = math.max(56.0, (thickMm * scalePxPerMm) / 2 + 48);
     return WallRodHit(
       wallId: w.id,
@@ -1009,13 +1174,44 @@ void paintCeilingNumberAreaLabel(
   String? ceilingId,
 }) {
   if (areaM2 <= 0) return;
-  final inv = 1.0 / viewScale.clamp(0.35, 5.0);
   final areaText = areaM2 >= 10
       ? '${areaM2.toStringAsFixed(1)} ㎡'
       : '${areaM2.toStringAsFixed(2)} ㎡';
+  paintNumberMetricCanvasLabel(
+    canvas,
+    at: at,
+    metricText: areaText,
+    number: number,
+    viewScale: viewScale,
+    onHit: hits != null && ceilingId != null && number != null
+        ? (badgeCenter, hitRect, badgeR, inv) {
+            hits.add(
+              CeilingBadgeHit(
+                ceilingId: ceilingId,
+                center: badgeCenter,
+                number: number,
+                radius: badgeR + 8 * inv,
+                hitRect: hitRect,
+              ),
+            );
+          }
+        : null,
+  );
+}
 
+/// 番号＋計測値の底座チップ（天井面積／下り長さ／PDF 用）
+void paintNumberMetricCanvasLabel(
+  Canvas canvas, {
+  required Offset at,
+  required String metricText,
+  int? number,
+  double viewScale = 1,
+  void Function(Offset badgeCenter, Rect hitRect, double badgeR, double inv)?
+      onHit,
+}) {
+  final inv = 1.0 / viewScale.clamp(0.35, 5.0);
   final numSize = 16.0 * inv;
-  final areaSize = 17.0 * inv;
+  final metricSize = 17.0 * inv;
   final badgeR = 14.0 * inv;
   final gap = 6.0 * inv;
   final padH = 8.0 * inv;
@@ -1023,12 +1219,12 @@ void paintCeilingNumberAreaLabel(
   final radius = 8.0 * inv;
   final strokeW = 1.6 * inv;
 
-  final areaTp = TextPainter(
+  final metricTp = TextPainter(
     text: TextSpan(
-      text: areaText,
+      text: metricText,
       style: TextStyle(
         color: Colors.white,
-        fontSize: areaSize,
+        fontSize: metricSize,
         fontWeight: FontWeight.w800,
         height: 1.05,
       ),
@@ -1054,11 +1250,11 @@ void paintCeilingNumberAreaLabel(
 
   final hasNum = numTp != null;
   final boxW = hasNum
-      ? badgeR * 2 + gap + areaTp.width + padH * 2
-      : areaTp.width + padH * 2;
+      ? badgeR * 2 + gap + metricTp.width + padH * 2
+      : metricTp.width + padH * 2;
   final boxH = hasNum
-      ? math.max(badgeR * 2 + 10 * inv, areaTp.height + padV * 2)
-      : areaTp.height + padV * 2;
+      ? math.max(badgeR * 2 + 10 * inv, metricTp.height + padV * 2)
+      : metricTp.height + padV * 2;
   final box = RRect.fromRectAndRadius(
     Rect.fromCenter(center: at, width: boxW, height: boxH),
     Radius.circular(radius),
@@ -1081,7 +1277,6 @@ void paintCeilingNumberAreaLabel(
   );
 
   if (hasNum) {
-    final n = number!;
     final badgeCenter = Offset(
       at.dx - boxW / 2 + padH + badgeR,
       at.dy,
@@ -1106,26 +1301,18 @@ void paintCeilingNumberAreaLabel(
         badgeCenter.dy - numTp.height / 2,
       ),
     );
-    areaTp.paint(
+    metricTp.paint(
       canvas,
       Offset(
         badgeCenter.dx + badgeR + gap,
-        at.dy - areaTp.height / 2,
+        at.dy - metricTp.height / 2,
       ),
     );
-    if (hits != null && ceilingId != null) {
-      hits.add(
-        CeilingBadgeHit(
-          ceilingId: ceilingId,
-          center: badgeCenter,
-          number: n,
-        ),
-      );
-    }
+    onHit?.call(badgeCenter, box.outerRect.inflate(6 * inv), badgeR, inv);
   } else {
-    areaTp.paint(
+    metricTp.paint(
       canvas,
-      Offset(at.dx - areaTp.width / 2, at.dy - areaTp.height / 2),
+      Offset(at.dx - metricTp.width / 2, at.dy - metricTp.height / 2),
     );
   }
 }
@@ -1136,6 +1323,11 @@ double distanceLabelMm(Offset a, Offset b, double scalePxPerMm) {
   final lenPx = (b - a).distance;
   if (lenPx < 8) return 0;
   return lenPx / scalePxPerMm;
+}
+
+/// 画線の全長（折点前後の全区間。壁番号チップ／鉄板Tで同じ式）
+double wallDrawnLengthMm(WallSegment wall, double scalePxPerMm) {
+  return ironPlateLengthMm(wall, scalePxPerMm);
 }
 
 /// 鉄板線の全長（折点前後の全区間。線ラベル／T／材料選択で同じ式）

@@ -500,11 +500,11 @@ class Ms {
   String get oneSideA =>
       _p('片面（A面のみ）', 'One side (A only)', '单面（仅A面）', 'Một mặt (chỉ A)');
   String get bothFaceWall => _p('両面壁', 'Both-sided wall', '双面墙', 'Tường hai mặt');
-  String finishWallThick(String thick, String stud, bool withBoard) => _p(
-        '仕上壁厚 約 ${thick}mm（スタッド$stud${withBoard ? ' + ボード' : ''}）',
-        'Finished thickness ≈ ${thick}mm (stud $stud${withBoard ? ' + board' : ''})',
-        '完成墙厚约 ${thick}mm（立柱$stud${withBoard ? ' + 板' : ''}）',
-        'Dày hoàn thiện ≈ ${thick}mm (thanh $stud${withBoard ? ' + tấm' : ''})',
+  String finishWallThick(String thick, String runner, bool withBoard) => _p(
+        '仕上壁厚 約 ${thick}mm（ランナー$runner${withBoard ? ' + ボード' : ''}）',
+        'Finished thickness ≈ ${thick}mm (runner $runner${withBoard ? ' + board' : ''})',
+        '完成墙厚约 ${thick}mm（地龙骨$runner${withBoard ? ' + 板' : ''}）',
+        'Dày hoàn thiện ≈ ${thick}mm (runner $runner${withBoard ? ' + tấm' : ''})',
       );
   String get rockFeltAuto => _p(
         'Z・強化・ハイパー・スーパー／厚さ21mmで自動選択',

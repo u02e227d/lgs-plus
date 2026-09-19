@@ -1,0 +1,191 @@
+{
+  "identifier" : "LGSPlusMacStore",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+
+  ],
+  "settings" : {
+    "_failTransactionsEnabled" : false,
+    "_locale" : "ja",
+    "_storefront" : "JPN",
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "LGSPlusMacMonthlyGroup",
+      "localizations" : [
+        {
+          "description" : "LGS+積算 席位プラン",
+          "displayName" : "LGS+積算 席位",
+          "locale" : "ja"
+        },
+        {
+          "description" : "LGS+ seat plans",
+          "displayName" : "LGS+ Seats",
+          "locale" : "en_US"
+        }
+      ],
+      "name" : "LGS+ Mac席位月額",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "9980",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "LGSPlusMacTeam1",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "1席。アップロード無制限。同僚招待なし（本人のみ）。",
+              "displayName" : "1席（月額）",
+              "locale" : "ja"
+            },
+            {
+              "description" : "1 seat. Unlimited uploads.",
+              "displayName" : "1 seat (monthly)",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "lgsplus.mac.team.1.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Team 1",
+          "subscriptionGroupID" : "LGSPlusMacMonthlyGroup",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "29980",
+          "familyShareable" : false,
+          "groupNumber" : 2,
+          "internalID" : "LGSPlusMacTeam5",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "5席。アップロード無制限。同僚をメール招待。",
+              "displayName" : "5席（月額）",
+              "locale" : "ja"
+            },
+            {
+              "description" : "5 seats. Unlimited uploads. Invite colleagues by email.",
+              "displayName" : "5 seats (monthly)",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "lgsplus.mac.team.5.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Team 5",
+          "subscriptionGroupID" : "LGSPlusMacMonthlyGroup",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "49980",
+          "familyShareable" : false,
+          "groupNumber" : 3,
+          "internalID" : "LGSPlusMacTeam10",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "10席。アップロード無制限。同僚をメール招待。",
+              "displayName" : "10席（月額）",
+              "locale" : "ja"
+            },
+            {
+              "description" : "10 seats. Unlimited uploads. Invite colleagues by email.",
+              "displayName" : "10 seats (monthly)",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "lgsplus.mac.team.10.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Team 10",
+          "subscriptionGroupID" : "LGSPlusMacMonthlyGroup",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "69980",
+          "familyShareable" : false,
+          "groupNumber" : 4,
+          "internalID" : "LGSPlusMacTeam15",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "15席。アップロード無制限。同僚をメール招待。",
+              "displayName" : "15席（月額）",
+              "locale" : "ja"
+            },
+            {
+              "description" : "15 seats. Unlimited uploads. Invite colleagues by email.",
+              "displayName" : "15 seats (monthly)",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "lgsplus.mac.team.15.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Team 15",
+          "subscriptionGroupID" : "LGSPlusMacMonthlyGroup",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "89980",
+          "familyShareable" : false,
+          "groupNumber" : 5,
+          "internalID" : "LGSPlusMacTeam20",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "20席。アップロード無制限。同僚をメール招待。",
+              "displayName" : "20席（月額）",
+              "locale" : "ja"
+            },
+            {
+              "description" : "20 seats. Unlimited uploads. Invite colleagues by email.",
+              "displayName" : "20 seats (monthly)",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "lgsplus.mac.team.20.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Team 20",
+          "subscriptionGroupID" : "LGSPlusMacMonthlyGroup",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}

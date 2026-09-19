@@ -3,9 +3,13 @@ import 'package:uuid/uuid.dart';
 
 import '../data/database.dart';
 import '../models/models.dart';
+import '../services/account_plan.dart';
 import '../services/auth_service.dart';
 import '../services/calc_engine.dart';
 import '../services/device_session.dart';
+import '../services/lgsplus_cloud.dart';
+import '../services/notice_unread_controller.dart';
+import '../services/store_billing.dart';
 
 class AppState extends ChangeNotifier {
   AppState() {
@@ -13,7 +17,7 @@ class AppState extends ChangeNotifier {
   }
 
   /// テスト期間：起動時にログイン画面をスキップ
-  static const bool testDirectLogin = true;
+  static const bool testDirectLogin = false;
 
   final AppDatabase _db = AppDatabase.instance;
   late final AuthService _auth;
@@ -23,6 +27,7 @@ class AppState extends ChangeNotifier {
   bool booting = true;
   bool sessionKicked = false;
   List<SiteProject> projects = [];
+  final Set<String> _appliedStoreTxns = <String>{};
 
   AuthService get auth => _auth;
   AppDatabase get db => _db;
@@ -37,7 +42,11 @@ class AppState extends ChangeNotifier {
         user = await _auth.ensureTestLogin();
       }
       if (user != null) {
-        projects = await _db.listProjects();
+        await _db.claimOrphanProjects(user!.id);
+        projects = await _db.listProjects(userId: user!.id);
+        NoticeUnreadController.instance.start();
+      } else {
+        NoticeUnreadController.instance.stop();
       }
     } catch (_) {
       // ローカル起動は必ず完了させる
@@ -45,7 +54,45 @@ class AppState extends ChangeNotifier {
       booting = false;
       notifyListeners();
     }
+    await StoreBilling.instance.attach((p) async {
+      final u = user;
+      if (u == null || !DeviceSession.enforceFor(u.email)) return;
+      final txn = p.purchaseID?.trim() ?? '';
+      if (txn.isNotEmpty && !_appliedStoreTxns.add(txn)) return;
+      final signed = p.verificationData.serverVerificationData.trim();
+      if (signed.isEmpty) return;
+      try {
+        user = await _auth.applyStorePaid(
+          u,
+          purchaseId: p.purchaseID,
+          productId: p.productID,
+          signedTransaction: signed,
+        );
+        notifyListeners();
+      } catch (_) {
+        _appliedStoreTxns.remove(txn);
+      }
+    });
     await checkDeviceSession();
+  }
+
+  Future<void> startStorePurchase([String? productId]) async {
+    final u = user;
+    if (u == null) return;
+    await StoreBilling.instance.buy(
+      productId: productId ?? AccountPlan.storeMonthlyProductId,
+      applicationUserName: u.id,
+    );
+  }
+
+  Future<void> restoreStorePurchases() async {
+    await StoreBilling.instance.restore();
+  }
+
+  @override
+  void dispose() {
+    StoreBilling.instance.detach();
+    super.dispose();
   }
 
   Future<void> checkDeviceSession({bool claim = false}) async {
@@ -57,6 +104,8 @@ class AppState extends ChangeNotifier {
         user = merged;
         notifyListeners();
       }
+    } on DeviceSwitchCooldownException {
+      await _signOutLocal();
     } on SessionKickedException {
       await _signOutLocal();
     } catch (_) {
@@ -68,11 +117,17 @@ class AppState extends ChangeNotifier {
     sessionKicked = true;
     user = null;
     projects = [];
+    NoticeUnreadController.instance.stop();
     notifyListeners();
   }
 
   Future<void> refreshProjects() async {
-    projects = await _db.listProjects();
+    final uid = user?.id;
+    if (uid == null || uid.isEmpty) {
+      projects = [];
+    } else {
+      projects = await _db.listProjects(userId: uid);
+    }
     notifyListeners();
   }
 
@@ -86,9 +141,12 @@ class AppState extends ChangeNotifier {
     user = u;
     if (u != null) {
       sessionKicked = false;
-      projects = await _db.listProjects();
+      await _db.claimOrphanProjects(u.id);
+      projects = await _db.listProjects(userId: u.id);
+      NoticeUnreadController.instance.start();
     } else {
       projects = [];
+      NoticeUnreadController.instance.stop();
     }
     notifyListeners();
   }
@@ -107,14 +165,57 @@ class AppState extends ChangeNotifier {
     return saved;
   }
 
+  /// 新規図面アップロード時に枠を消費（差し替えは呼び出し側でスキップ）
+  Future<bool> consumeDrawingUpload() async {
+    final u = user;
+    if (u == null) return false;
+    if (u.uploadUnlimited) return true;
+    if (!u.canUploadDrawing) return false;
+    try {
+      final quota = await LgsplusCloud.consumeUpload(u.id);
+      if (quota != null) {
+        final q = quota['quota'] is Map
+            ? Map<String, dynamic>.from(quota['quota'] as Map)
+            : quota;
+        final next = u.copyWith(
+          uploadUnlimited: q['unlimited'] == 1 || q['unlimited'] == true,
+          uploadRemaining: (q['remaining'] as num?)?.toInt() ?? u.uploadRemaining,
+          uploadLimit: (q['limit'] as num?)?.toInt() ?? u.uploadLimit,
+          uploadUsed: (q['used'] as num?)?.toInt() ?? u.uploadUsed,
+          uploadBonus: (q['bonus'] as num?)?.toInt() ?? u.uploadBonus,
+        );
+        await _db.upsertUser(next);
+        user = next;
+        notifyListeners();
+        return true;
+      }
+    } catch (e) {
+      final msg = e.toString();
+      if (msg.contains('upload_limit')) return false;
+      // オフライン時はローカル枠を減らす
+    }
+    final remaining = u.uploadRemaining - 1;
+    if (remaining < 0) return false;
+    final next = u.copyWith(
+      uploadRemaining: remaining,
+      uploadUsed: u.uploadUsed + 1,
+    );
+    await _db.upsertUser(next);
+    user = next;
+    notifyListeners();
+    return true;
+  }
+
   Future<SiteProject> createProject({
     required String name,
     required String address,
     required String contactName,
     required String phone,
   }) async {
+    final uid = user?.id ?? '';
     final project = SiteProject(
       id: newId(),
+      userId: uid,
       name: name.trim(),
       address: address.trim(),
       contactName: contactName.trim(),

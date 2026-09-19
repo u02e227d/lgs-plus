@@ -3,6 +3,8 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -16,6 +18,7 @@ import '../../services/calc_engine.dart';
 import '../../services/edge_snap_engine.dart';
 import '../../services/estimate_builder.dart';
 import '../../services/feature_access.dart';
+import '../../services/app_platform.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/drop_draw_guide.dart';
 import '../../widgets/measure_mouse.dart';
@@ -112,6 +115,19 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
   static const _holdNeed = Duration(milliseconds: 1500);
   static const _stillPx = 14.0;
 
+  // Mac：測定キャンバスの拡大縮小・移動
+  static bool get _isMac => AppPlatform.usesDesktopPointer;
+  Offset? _macNavDownPos;
+  DateTime? _macNavLastTapAt;
+  Offset? _macNavLastTapPos;
+  bool _macNavPanning = false;
+  int? _macNavPointer;
+  Timer? _macNavTapTimer;
+  static const _macNavClickSlop = 6.0;
+  static const _macNavDoubleTapMs = 350;
+  static const _macNavZoomIn = 1.35;
+  static const _macNavZoomOut = 1 / 1.35;
+
   List<LineSeg> get _snapLines => _snap.lines;
 
   double _scaleK = 1;
@@ -125,6 +141,7 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
 
   @override
   void dispose() {
+    _macNavTapTimer?.cancel();
     _holdTicker?.cancel();
     _transform.dispose();
     super.dispose();
@@ -189,9 +206,127 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
   }
 
   Offset _tipFromFinger(Offset finger) {
-    final raw = MeasureMousePainter.tipFromFinger(finger, _viewScale);
+    // Mac：実ポインタ位置＝先端（十字カーソルのホットスポット）
+    final raw = _isMac
+        ? finger
+        : MeasureMousePainter.tipFromFinger(finger, _viewScale);
     final s = _snapPoint(raw);
     return Offset(s.x, s.y);
+  }
+
+  Offset _viewportToContent(Offset viewport) {
+    final inv = Matrix4.inverted(_transform.value);
+    return MatrixUtils.transformPoint(inv, viewport);
+  }
+
+  Offset _contentToViewport(Offset content) {
+    return MatrixUtils.transformPoint(_transform.value, content);
+  }
+
+  void _zoomAtViewport(Offset focalViewport, double factor) {
+    final current = _transform.value;
+    final scale = current.getMaxScaleOnAxis();
+    if (scale <= 0) return;
+    final nextScale = (scale * factor).clamp(0.05, 20.0);
+    final ratio = nextScale / scale;
+    if ((ratio - 1).abs() < 1e-6) return;
+
+    final sceneFocal = _viewportToContent(focalViewport);
+    final matrix = Matrix4.identity()
+      ..translateByDouble(focalViewport.dx, focalViewport.dy, 0, 1)
+      ..scaleByDouble(ratio, ratio, 1, 1)
+      ..translateByDouble(-focalViewport.dx, -focalViewport.dy, 0, 1)
+      ..multiply(current);
+
+    final after = MatrixUtils.transformPoint(matrix, sceneFocal);
+    matrix.translateByDouble(
+      focalViewport.dx - after.dx,
+      focalViewport.dy - after.dy,
+      0,
+      1,
+    );
+    _transform.value = matrix;
+  }
+
+  bool get _macClickZoomEnabled =>
+      _isMac &&
+      !_touching &&
+      !_dropSecWidthMode &&
+      _tool == CanvasTool.pan;
+
+  void _macNavPointerDown(PointerDownEvent e, Offset local) {
+    if (!_macClickZoomEnabled) return;
+    _macNavPointer = e.pointer;
+    _macNavDownPos = local;
+    _macNavPanning = false;
+  }
+
+  void _macNavPointerMove(PointerMoveEvent e, Offset local) {
+    if (e.pointer != _macNavPointer || _macNavDownPos == null) return;
+    final delta = local - _macNavDownPos!;
+    if (delta.distance > _macNavClickSlop) {
+      _macNavTapTimer?.cancel();
+      _macNavTapTimer = null;
+      _macNavLastTapAt = null;
+      _macNavLastTapPos = null;
+      _macNavPanning = true;
+    }
+  }
+
+  void _macNavPointerUp(PointerEvent e, Offset local) {
+    if (e.pointer != _macNavPointer) return;
+    final wasPanning = _macNavPanning;
+    final downPos = _macNavDownPos;
+    _macNavPointer = null;
+    _macNavDownPos = null;
+    _macNavPanning = false;
+
+    if (!_isMac || _touching || _dropSecWidthMode || _tool != CanvasTool.pan) {
+      return;
+    }
+    if (wasPanning || downPos == null) return;
+
+    final now = DateTime.now();
+    final isDouble = _macNavLastTapAt != null &&
+        now.difference(_macNavLastTapAt!) <
+            const Duration(milliseconds: _macNavDoubleTapMs) &&
+        _macNavLastTapPos != null &&
+        (local - _macNavLastTapPos!).distance < 28;
+
+    if (isDouble) {
+      _macNavTapTimer?.cancel();
+      _macNavTapTimer = null;
+      _macNavLastTapAt = null;
+      _macNavLastTapPos = null;
+      _zoomAtViewport(_contentToViewport(local), _macNavZoomIn);
+      return;
+    }
+
+    _macNavLastTapAt = now;
+    _macNavLastTapPos = local;
+    _macNavTapTimer?.cancel();
+    _macNavTapTimer = Timer(
+      const Duration(milliseconds: _macNavDoubleTapMs),
+      () {
+        if (!mounted) return;
+        final focal = _macNavLastTapPos;
+        _macNavLastTapAt = null;
+        _macNavLastTapPos = null;
+        _macNavTapTimer = null;
+        if (focal != null && _tool == CanvasTool.pan && !_touching) {
+          _zoomAtViewport(_contentToViewport(focal), _macNavZoomOut);
+        }
+      },
+    );
+  }
+
+  void _macNavScrollZoom(PointerScrollEvent e, Offset local) {
+    if (!_isMac || _touching || _dropSecWidthMode) return;
+    // トラックパッド／マウスホイールで拡大縮小
+    final dy = e.scrollDelta.dy;
+    if (dy.abs() < 0.1) return;
+    final factor = dy > 0 ? (1 / 1.12) : 1.12;
+    _zoomAtViewport(local, factor);
   }
 
   Future<void> _persist(Measurement m) async {
@@ -1985,7 +2120,7 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
     );
   }
 
-  WallBadgeHit? _badgeAt(Offset local, {double radius = 28}) {
+  WallBadgeHit? _badgeAt(Offset local, {double radius = 40}) {
     for (var i = _badgeHits.length - 1; i >= 0; i--) {
       if (_badgeHits[i].hit(local, radius: radius)) return _badgeHits[i];
     }
@@ -3092,119 +3227,153 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
   Widget _canvas() {
     return LayoutBuilder(
       builder: (context, constraints) {
-        return Stack(
-          children: [
-            InteractiveViewer(
-              transformationController: _transform,
-              constrained: false,
-              boundaryMargin: const EdgeInsets.all(double.infinity),
-              minScale: 0.05,
-              maxScale: 20,
-              panEnabled: !_touching && !_dropSecWidthMode,
-              scaleEnabled: !_dropSecWidthMode,
-              child: SizedBox(
-                width: _imageSize.width,
-                height: _imageSize.height,
-                child: Listener(
-                  onPointerDown: (e) {
-                    _openedNumberOnDown = false;
-                    // 天井／壁／下り／開口の番号は移動モードでもタップ可
-                    for (final b in _ceilingBadgeHits) {
-                      if (b.hit(e.localPosition)) {
-                        _holdTicker?.cancel();
-                        setState(() {
-                          _touching = false;
-                          _mouseTip = null;
-                          _selectedCeilingId = b.ceilingId;
-                          for (final ceil in
-                              _measurement?.ceilings ?? const <CeilingRegion>[]) {
-                            if (ceil.id == b.ceilingId &&
-                                ceil.highlightArgb != null) {
-                              _drawColorArgb = ceil.highlightArgb!;
-                              break;
-                            }
+        final macPanClickZoom =
+            _isMac && _tool == CanvasTool.pan && !_dropSecWidthMode;
+        return MouseRegion(
+          // 描画ツール：精密十字カーソル（ホットスポット＝中心＝測点）
+          // 押下中はシステムカーソルを隠し、自前の先端リングを表示
+          cursor: _isMac && _tool != CanvasTool.pan
+              ? ((_touching || _dropSecWidthMode)
+                  ? SystemMouseCursors.none
+                  : SystemMouseCursors.precise)
+              : MouseCursor.defer,
+          child: Listener(
+            onPointerSignal: (e) {
+              if (e is PointerScrollEvent) {
+                final box = context.findRenderObject() as RenderBox?;
+                if (box == null) return;
+                _macNavScrollZoom(e, box.globalToLocal(e.position));
+              }
+            },
+            child: Stack(
+              children: [
+                InteractiveViewer(
+                  transformationController: _transform,
+                  constrained: false,
+                  boundaryMargin: const EdgeInsets.all(double.infinity),
+                  minScale: 0.05,
+                  maxScale: 20,
+                  // Mac：描画ツール中でも二本指パン／ピンチ可（マウス押下中のみ停止）
+                  panEnabled: !_touching && !_dropSecWidthMode,
+                  scaleEnabled: !_dropSecWidthMode,
+                  child: SizedBox(
+                    width: _imageSize.width,
+                    height: _imageSize.height,
+                    child: Listener(
+                      onPointerDown: (e) {
+                        if (macPanClickZoom) {
+                          _macNavPointerDown(e, e.localPosition);
+                        }
+                        _openedNumberOnDown = false;
+                        // 天井／壁／下り／開口の番号は移動モードでもタップ可
+                        for (final b in _ceilingBadgeHits) {
+                          if (b.hit(e.localPosition)) {
+                            _holdTicker?.cancel();
+                            setState(() {
+                              _touching = false;
+                              _mouseTip = null;
+                              _selectedCeilingId = b.ceilingId;
+                              for (final ceil in _measurement?.ceilings ??
+                                  const <CeilingRegion>[]) {
+                                if (ceil.id == b.ceilingId &&
+                                    ceil.highlightArgb != null) {
+                                  _drawColorArgb = ceil.highlightArgb!;
+                                  break;
+                                }
+                              }
+                            });
+                            _openedNumberOnDown = true;
+                            _openCeilingParams(b.ceilingId);
+                            return;
                           }
-                        });
-                        _openedNumberOnDown = true;
-                        _openCeilingParams(b.ceilingId);
-                        return;
-                      }
-                    }
-                    final wallBadge = _badgeAt(e.localPosition);
-                    if (wallBadge != null) {
-                      _holdTicker?.cancel();
-                      setState(() {
-                        _touching = false;
-                        _mouseTip = null;
-                      });
-                      _openedNumberOnDown = true;
-                      _openWallMaterial(wallBadge.wallId);
-                      return;
-                    }
-                    for (final b in _dropBadgeHits) {
-                      if (b.hit(e.localPosition, radius: 28)) {
-                        _holdTicker?.cancel();
-                        setState(() {
-                          _touching = false;
-                          _mouseTip = null;
-                          _selectedDropId = b.dropId;
-                          for (final d
-                              in _measurement?.drops ?? const <DropRegion>[]) {
-                            if (d.id == b.dropId && d.highlightArgb != null) {
-                              _drawColorArgb = d.highlightArgb!;
-                              break;
-                            }
+                        }
+                        final wallBadge = _badgeAt(e.localPosition);
+                        if (wallBadge != null) {
+                          _holdTicker?.cancel();
+                          setState(() {
+                            _touching = false;
+                            _mouseTip = null;
+                          });
+                          _openedNumberOnDown = true;
+                          _openWallMaterial(wallBadge.wallId);
+                          return;
+                        }
+                        for (final b in _dropBadgeHits) {
+                          if (b.hit(e.localPosition, radius: 28)) {
+                            _holdTicker?.cancel();
+                            setState(() {
+                              _touching = false;
+                              _mouseTip = null;
+                              _selectedDropId = b.dropId;
+                              for (final d in _measurement?.drops ??
+                                  const <DropRegion>[]) {
+                                if (d.id == b.dropId &&
+                                    d.highlightArgb != null) {
+                                  _drawColorArgb = d.highlightArgb!;
+                                  break;
+                                }
+                              }
+                            });
+                            _openedNumberOnDown = true;
+                            _editDrop(b.dropId);
+                            return;
                           }
-                        });
-                        _openedNumberOnDown = true;
-                        _editDrop(b.dropId);
-                        return;
-                      }
-                    }
-                    for (final h in _openingHits) {
-                      if (h.hit(e.localPosition)) {
-                        _holdTicker?.cancel();
-                        setState(() {
-                          _touching = false;
-                          _mouseTip = null;
-                          _openingDraft.clear();
-                        });
-                        _openedNumberOnDown = true;
-                        _editOpening(h.openingId);
-                        return;
-                      }
-                    }
-                    for (final h in _dropWidthPlusHits) {
-                      if (h.hit(e.localPosition, radius: 22)) {
-                        _holdTicker?.cancel();
-                        _startDropSecondWidthMeasure(h);
-                        return;
-                      }
-                    }
-                    if (_dropSecWidthMode) {
-                      _onPointerDownSecWidth(e.localPosition);
-                      return;
-                    }
-                    if (_tool == CanvasTool.pan) return;
-                    _onPointerDown(e.localPosition);
-                  },
-                  onPointerMove: (e) {
-                    if (_dropSecWidthMode) {
-                      _onPointerMoveSecWidth(e.localPosition);
-                      return;
-                    }
-                    if (_tool == CanvasTool.pan) return;
-                    _onPointerMove(e.localPosition);
-                  },
-                  onPointerUp: (e) {
-                    if (_dropSecWidthMode) {
-                      _onPointerUpSecWidth(e.localPosition);
-                      return;
-                    }
-                    if (_tool == CanvasTool.pan) return;
-                    _onPointerUp(e.localPosition);
-                  },
-                  child: Stack(
+                        }
+                        for (final h in _openingHits) {
+                          if (h.hit(e.localPosition)) {
+                            _holdTicker?.cancel();
+                            setState(() {
+                              _touching = false;
+                              _mouseTip = null;
+                              _openingDraft.clear();
+                            });
+                            _openedNumberOnDown = true;
+                            _editOpening(h.openingId);
+                            return;
+                          }
+                        }
+                        for (final h in _dropWidthPlusHits) {
+                          if (h.hit(e.localPosition, radius: 22)) {
+                            _holdTicker?.cancel();
+                            _startDropSecondWidthMeasure(h);
+                            return;
+                          }
+                        }
+                        if (_dropSecWidthMode) {
+                          _onPointerDownSecWidth(e.localPosition);
+                          return;
+                        }
+                        if (_tool == CanvasTool.pan) return;
+                        _onPointerDown(e.localPosition);
+                      },
+                      onPointerMove: (e) {
+                        if (macPanClickZoom) {
+                          _macNavPointerMove(e, e.localPosition);
+                        }
+                        if (_dropSecWidthMode) {
+                          _onPointerMoveSecWidth(e.localPosition);
+                          return;
+                        }
+                        if (_tool == CanvasTool.pan) return;
+                        _onPointerMove(e.localPosition);
+                      },
+                      onPointerUp: (e) {
+                        if (macPanClickZoom) {
+                          _macNavPointerUp(e, e.localPosition);
+                        }
+                        if (_dropSecWidthMode) {
+                          _onPointerUpSecWidth(e.localPosition);
+                          return;
+                        }
+                        if (_tool == CanvasTool.pan) return;
+                        _onPointerUp(e.localPosition);
+                      },
+                      onPointerCancel: (e) {
+                        if (macPanClickZoom) {
+                          _macNavPointerUp(e, e.localPosition);
+                        }
+                      },
+                      child: Stack(
                     fit: StackFit.expand,
                     children: [
                       RawImage(image: _bgImage, fit: BoxFit.fill),
@@ -3236,13 +3405,28 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                             final areaText = areaM2 >= 10
                                 ? '${areaM2.toStringAsFixed(1)} ㎡'
                                 : '${areaM2.toStringAsFixed(2)} ㎡';
-                            final hitR = 28.0 * inv;
+                            final metricTp = TextPainter(
+                              text: TextSpan(
+                                text: areaText,
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              textDirection: TextDirection.ltr,
+                            )..layout();
+                            final chipHit = numberMetricChipHit(
+                              anchor: Offset(cx, cy),
+                              inv: inv,
+                              metricWidth: metricTp.width,
+                            );
                             _ceilingBadgeHits.add(
                               CeilingBadgeHit(
                                 ceilingId: c.id,
-                                center: Offset(cx, cy),
+                                center: chipHit.numberCenter,
                                 number: n,
-                                radius: hitR,
+                                radius: 22 * inv,
+                                hitRect: chipHit.hitRect,
                               ),
                             );
                             badgeOverlays.add(
@@ -3254,9 +3438,74 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                                   child: Transform.scale(
                                     scale: inv,
                                     alignment: Alignment.topLeft,
-                                    child: _CeilingNumberAreaChip(
+                                    child: _NumberMetricChip(
                                       number: n,
-                                      areaText: areaText,
+                                      metricText: areaText,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+                          // 壁番号＋長さ合計（天井と同サイズのチップ）
+                          var wallNo = 0;
+                          for (final w in _measurement!.walls) {
+                            if (w.isIronPlate || w.points.length < 2) continue;
+                            wallNo++;
+                            final tip = Offset(
+                              w.points.last.x,
+                              w.points.last.y,
+                            );
+                            final lenMm = (w.quantities['wall_length_mm']
+                                        as num?)
+                                    ?.toDouble() ??
+                                wallDrawnLengthMm(w, _k);
+                            final lenText =
+                                lenMm > 0 ? distanceLabelText(lenMm) : '—';
+                            badgeOverlays.add(
+                              Positioned(
+                                left: tip.dx,
+                                top: tip.dy,
+                                child: Transform.translate(
+                                  offset: Offset(-52 * inv, -16 * inv),
+                                  child: Transform.scale(
+                                    scale: inv,
+                                    alignment: Alignment.topLeft,
+                                    child: _NumberMetricChip(
+                                      number: wallNo,
+                                      metricText: lenText,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }
+                          // 下り番号＋総長さ（天井／壁と同サイズの底座チップ）
+                          for (final d in _measurement?.drops ?? const []) {
+                            if (d.points.length < 2) continue;
+                            final tip = Offset(
+                              d.points.last.x,
+                              d.points.last.y,
+                            );
+                            final lenMm = d.lengthMm > 0
+                                ? d.lengthMm
+                                : (d.quantities['drop_length_mm'] as num?)
+                                        ?.toDouble() ??
+                                    0;
+                            final lenText =
+                                lenMm > 0 ? distanceLabelText(lenMm) : '—';
+                            badgeOverlays.add(
+                              Positioned(
+                                left: tip.dx,
+                                top: tip.dy,
+                                child: Transform.translate(
+                                  offset: Offset(-52 * inv, -16 * inv),
+                                  child: Transform.scale(
+                                    scale: inv,
+                                    alignment: Alignment.topLeft,
+                                    child: _NumberMetricChip(
+                                      number: d.groupNumber,
+                                      metricText: lenText,
                                     ),
                                   ),
                                 ),
@@ -3306,7 +3555,11 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                                   scalePxPerMm: _k,
                                   draftFillArgb: _drawColorArgb,
                                   viewScale: vs,
+                                  paintDropNumberBadges: false,
                                   ironDraft: _wallDrawMode == WallDrawMode.ironPlate,
+                                  wallDraftFollowTip: _touching &&
+                                      _mouseTip != null &&
+                                      !_mouseReady,
                                   wallDraft: [
                                     ..._wallPoints,
                                     if (_touching &&
@@ -3340,6 +3593,11 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                                   selectedWallId: _selectedWallId,
                                   ironDraft:
                                       _wallDrawMode == WallDrawMode.ironPlate,
+                                  wallDraftFollowTip:
+                                      _wallDrawMode == WallDrawMode.ironPlate &&
+                                          _touching &&
+                                          _mouseTip != null &&
+                                          !_mouseReady,
                                   wallDraft: [
                                     ..._wallPoints,
                                     if (_wallDrawMode ==
@@ -3366,7 +3624,7 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                 ),
               ),
             ),
-            // 画面固定サイズのマウス（ズーム非連動）
+            // 画面固定サイズのマウス／Mac は先端十字＋赤→緑リング
             if ((_touching || _dropSecWidthMode) && _mouseTip != null)
               AnimatedBuilder(
                 animation: _transform,
@@ -3375,8 +3633,29 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                     _transform.value,
                     _mouseTip!,
                   );
-                  const boxW = 80.0;
-                  const boxH = 130.0;
+                  final readyColor = _mouseReady
+                      ? const Color(0xFF2E7D32)
+                      : const Color(0xFFC62828);
+                  if (_isMac) {
+                    const box = 48.0;
+                    return Positioned(
+                      left: screenTip.dx - box / 2,
+                      top: screenTip.dy - box / 2,
+                      width: box,
+                      height: box,
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          size: const Size(box, box),
+                          painter: MacMeasureTipPainter(
+                            progress: _holdProgress,
+                            color: readyColor,
+                          ),
+                        ),
+                      ),
+                    );
+                  }
+                  const boxW = 88.0;
+                  const boxH = 145.0;
                   return Positioned(
                     left: screenTip.dx - boxW / 2,
                     top: screenTip.dy - 4,
@@ -3391,9 +3670,7 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                             painter: HoldProgressPainter(
                               center: Offset(boxW / 2, 8),
                               progress: _holdProgress,
-                              color: _mouseReady
-                                  ? const Color(0xFF2E7D32)
-                                  : const Color(0xFFC62828),
+                              color: readyColor,
                             ),
                           ),
                           CustomPaint(
@@ -3425,7 +3702,9 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
                   ),
                 ),
               ),
-          ],
+              ],
+            ),
+          ),
         );
       },
     );
@@ -3495,15 +3774,15 @@ class _MeasureCanvasScreenState extends State<MeasureCanvasScreen>
   }
 }
 
-/// 天井：赤丸番号＋面積（画像座標系で Transform.scale して画面サイズ一定）
-class _CeilingNumberAreaChip extends StatelessWidget {
-  const _CeilingNumberAreaChip({
+/// 番号＋計測値チップ（天井面積／壁長さで共通。画像座標で Transform.scale）
+class _NumberMetricChip extends StatelessWidget {
+  const _NumberMetricChip({
     required this.number,
-    required this.areaText,
+    required this.metricText,
   });
 
   final int number;
-  final String areaText;
+  final String metricText;
 
   @override
   Widget build(BuildContext context) {
@@ -3538,7 +3817,7 @@ class _CeilingNumberAreaChip extends StatelessWidget {
             ),
             const SizedBox(width: 6),
             Text(
-              areaText,
+              metricText,
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 14,

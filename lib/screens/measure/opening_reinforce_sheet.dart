@@ -112,8 +112,6 @@ class _OpeningReinforceSheetState extends State<OpeningReinforceSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final stock =
-        widget.stockLengthMm > 0 ? widget.stockLengthMm : 3000.0;
     return KeyboardDoneScope(
       child: SafeArea(
         child: SingleChildScrollView(
@@ -275,32 +273,6 @@ class _OpeningReinforceSheetState extends State<OpeningReinforceSheet> {
                   ],
                 ),
               ),
-              if (_material == OpeningMaterialKind.reinforce) ...[
-                const SizedBox(height: 10),
-                Builder(
-                  builder: (_) {
-                    final w = double.tryParse(_width.text.trim()) ?? 900;
-                    final bars = OpeningReinforceCalc.reinforceBars(
-                      pattern: _pattern,
-                      magusaSegments: _magusa,
-                      openingWidthMm: w,
-                      stockLengthMm: stock,
-                    );
-                    final v = _pattern.verticalLines;
-                    final hm = _pattern.horizontalLines(_magusa);
-                    final hBars = cutStockBars(
-                      memberCount: hm,
-                      pieceMm: w,
-                      stockMm: stock,
-                    );
-                    return Text(
-                      '補強材：縦${v}＋横定尺割付${hBars}＝${bars}本'
-                      '（まぐさ余りは同一壁の次開口へ流用）',
-                      style: const TextStyle(fontSize: 12, color: AppTheme.steel),
-                    );
-                  },
-                ),
-              ],
               const SizedBox(height: 16),
               FilledButton(
                 onPressed: () {

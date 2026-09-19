@@ -804,18 +804,8 @@ class _DropSettingsSheetState extends State<DropSettingsSheet> {
     );
   }
 
-  int _boardCountFor(_DropBoardLayerState layer) {
-    final area = _qty['drop_area_m2'] ?? 0;
-    final boardArea = (layer.widthMm / 1000.0) * (layer.heightMm / 1000.0);
-    if (boardArea <= 0 || area <= 0) return 0;
-    return (area / boardArea).ceil();
-  }
-
   Widget _boardLayerSection(int index, double area) {
     final layer = _boardLayers[index];
-    final count = _boardCountFor(layer);
-    final boardAreaM2 =
-        (layer.widthMm / 1000.0) * (layer.heightMm / 1000.0);
     final sizeIdx = _kBoardSizeOpts.indexWhere(
       (o) =>
           (o.$2 - layer.widthMm).abs() < 0.5 &&
@@ -912,19 +902,6 @@ class _DropSettingsSheetState extends State<DropSettingsSheet> {
               .clamp(0, _kBoardThicknesses.length - 1),
           onSelected: (i) =>
               setState(() => layer.thicknessMm = _kBoardThicknesses[i]),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          Ms.of(context).dropBoardQty(
-            count,
-            area.toStringAsFixed(2),
-            boardAreaM2.toStringAsFixed(3),
-          ),
-          style: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w700,
-            color: AppTheme.navy,
-          ),
         ),
       ],
     );

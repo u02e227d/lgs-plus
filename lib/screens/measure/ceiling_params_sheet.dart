@@ -291,22 +291,7 @@ class _CeilingParamsSheetState extends State<CeilingParamsSheet> {
                 ],
                 const SizedBox(height: 12),
               ],
-              Text(
-                _system == CeilingSystemKind.sq
-                    ? Ms.of(context).sqHint
-                    : (_panel == CeilingPanelSpec.panel15x3
-                        ? Ms.of(context).zairai15x3
-                        : _panel == CeilingPanelSpec.panel3x3
-                            ? Ms.of(context).zairai3x3
-                            : Ms.of(context).zairai36('${_pitch36.round()}mm')),
-                style: const TextStyle(fontSize: 12, color: AppTheme.steel),
-              ),
-              if (_system == CeilingSystemKind.zairai)
-                Text(
-                  Ms.of(context).zairaiBoltNote,
-                  style: const TextStyle(fontSize: 12, color: AppTheme.steel),
-                ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 4),
               OutlinedButton.icon(
                 onPressed: () {
                   setState(() {

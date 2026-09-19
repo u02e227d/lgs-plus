@@ -509,13 +509,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
     return sum;
   }
 
-  int _finishBoardCountFor(_FinishBoardLayerState layer) {
-    final area = _totalAreaM2;
-    final boardArea = (layer.widthMm / 1000.0) * (layer.heightMm / 1000.0);
-    if (boardArea <= 0 || area <= 0) return 0;
-    return (area / boardArea).ceil();
-  }
-
   int get _mikiriCount {
     final peri = _totalPerimeterMm;
     final len = double.tryParse(_mikiriLen.text.trim()) ?? 0;
@@ -825,18 +818,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final bolts = _boltCount;
-    final clips = _clipCount;
-    final sqCount = _sqStudCount;
-    final runnerCount = _runnerCount;
-    final channels = _ukeChannelCount;
-    final channelJoints = _channelJointCount;
-    final wBarCount = _wBarCount;
-    final singleBarCount = _singleBarCount;
-    final wBarJoints = _wBarJointCount;
-    final singleBarJoints = _singleBarJointCount;
-    final wClipCount = _wClipCount;
-    final singleClipCount = _singleClipCount;
     final area = _totalAreaM2;
     final clipOpts = _clipTypeOptions;
     final isSq = _isSq;
@@ -889,16 +870,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
               _customLengthField(_wBarLen, onChanged: () => setState(() {})),
               const SizedBox(height: 8),
               _stockLengthPicker(_wBarLen),
-              const SizedBox(height: 6),
-              Text(
-                '数量（自動・定尺割付）　$wBarCount 本'
-                '${_wBarLengthsMm.isEmpty ? '（Wバーなし）' : ''}',
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.navy,
-                ),
-              ),
               _extraRowsFor('w_bar'),
               const SizedBox(height: 20),
               _sectionTitle(Ms.of(context).sBar, kind: 'single_bar'),
@@ -930,19 +901,9 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
                   onChanged: () => setState(() {})),
               const SizedBox(height: 8),
               _stockLengthPicker(_singleBarLen),
-              const SizedBox(height: 6),
-              Text(
-                '数量（自動・定尺割付）　$singleBarCount 本'
-                '${_singleBarLengthsMm.isEmpty ? '（シングルバーなし）' : ''}',
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.navy,
-                ),
-              ),
               _extraRowsFor('single_bar'),
               const SizedBox(height: 20),
-              ..._channelSectionWidgets(channels, channelJoints),
+              ..._channelSectionWidgets(),
               _sectionTitle(Ms.of(context).wClip),
               LockableCupertinoPicker(
                 label: Ms.of(context).ukeWidth,
@@ -960,15 +921,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
                     apply: () => _wClipUkeWidth = next,
                   );
                 },
-              ),
-              const SizedBox(height: 6),
-              Text(
-                '数量（自動）= Wバーと野縁受けの交点　$wClipCount 個',
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.navy,
-                ),
               ),
               const SizedBox(height: 20),
               _sectionTitle(Ms.of(context).sClip),
@@ -989,15 +941,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
                   );
                 },
               ),
-              const SizedBox(height: 6),
-              Text(
-                '数量（自動）= シングルバーと野縁受けの交点　$singleClipCount 個',
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.navy,
-                ),
-              ),
               const SizedBox(height: 20),
               _sectionTitle(Ms.of(context).wBarJoint),
               LockableCupertinoPicker(
@@ -1017,16 +960,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
                   );
                 },
               ),
-              const SizedBox(height: 6),
-              Text(
-                '数量（自動）= 定尺継ぎ手　$wBarJoints 個'
-                '${wBarJoints == 0 ? '（継ぎなし）' : ''}',
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.navy,
-                ),
-              ),
               const SizedBox(height: 20),
               _sectionTitle(Ms.of(context).sBarJoint),
               LockableCupertinoPicker(
@@ -1045,16 +978,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
                     apply: () => _singleBarJointHeight = next,
                   );
                 },
-              ),
-              const SizedBox(height: 6),
-              Text(
-                '数量（自動）= 定尺継ぎ手　$singleBarJoints 個'
-                '${singleBarJoints == 0 ? '（継ぎなし）' : ''}',
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.navy,
-                ),
               ),
               const SizedBox(height: 20),
             ],
@@ -1082,16 +1005,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
                   style: const TextStyle(fontSize: 12, color: AppTheme.steel),
                 ),
               ],
-              const SizedBox(height: 6),
-              Text(
-                '数量（自動・定尺割付）　$sqCount 本'
-                '${_sqLengthsMm.isEmpty ? '（角スタッドなし）' : ''}',
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.navy,
-                ),
-              ),
               _extraRowsFor('sq_stud'),
               const SizedBox(height: 20),
             ],
@@ -1131,16 +1044,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
               controller: _runnerLen,
               includeCustomLabel: true,
             ),
-            const SizedBox(height: 6),
-            Text(
-              '数量（直交両側縁 ${(_runnerEdgeTotalMm / 1000).toStringAsFixed(2)}m'
-              ' ÷ 定尺・切上げ）　$runnerCount 本',
-              style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: AppTheme.navy,
-              ),
-            ),
             _extraRowsFor('runner'),
             const SizedBox(height: 20),
 
@@ -1160,15 +1063,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
                 items: clipOpts,
                 value: clipOpts.contains(_clipType) ? _clipType : clipOpts.first,
                 onChanged: (v) => setState(() => _clipType = v),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                '数量（自動）= 角スタッドと野縁受けの交点　$clips 個',
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.navy,
-                ),
               ),
               const SizedBox(height: 20),
             ],
@@ -1196,24 +1090,10 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
               controller: _boltLen,
               includeCustomLabel: true,
             ),
-            const SizedBox(height: 6),
-            Text(
-              '数量（自動）= 野縁受け上の全ネジ点数　$bolts 本',
-              style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: AppTheme.navy,
-              ),
-            ),
             _extraRowsFor('bolt'),
             const SizedBox(height: 20),
 
             _sectionTitle(Ms.of(context).nut),
-            Text(
-              '自動 = 全ネジボルト × 2（$bolts × 2 = ${bolts * 2}）',
-              style: const TextStyle(fontSize: 12, color: AppTheme.steel),
-            ),
-            const SizedBox(height: 6),
             TextField(
               controller: _nut,
               keyboardType: DoneKeyboard.integer,
@@ -1278,11 +1158,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
               onSelected: (i) =>
                   setState(() => _hangerHeight = _hangerHeights[i]),
             ),
-            const SizedBox(height: 8),
-            Text(
-              '自動 = 全ネジボルト数量（$bolts）',
-              style: const TextStyle(fontSize: 12, color: AppTheme.steel),
-            ),
             const SizedBox(height: 6),
             TextField(
               controller: _hanger,
@@ -1311,7 +1186,7 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
               ),
             ),
             const SizedBox(height: 12),
-            if (isSq) ..._channelSectionWidgets(channels, channelJoints),
+            if (isSq) ..._channelSectionWidgets(),
             _sectionTitle(Ms.of(context).other),
             for (var i = 0; i < _otherRows.length; i++) ...[
               if (i > 0) const SizedBox(height: 12),
@@ -1428,9 +1303,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
 
   Widget _finishBoardLayerSection(int index, double area) {
     final layer = _boardLayers[index];
-    final count = _finishBoardCountFor(layer);
-    final boardAreaM2 =
-        (layer.widthMm / 1000.0) * (layer.heightMm / 1000.0);
     final sizeIdx = _kBoardSizeOpts.indexWhere(
       (o) =>
           (o.$2 - layer.widthMm).abs() < 0.5 &&
@@ -1526,18 +1398,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
               .clamp(0, _kBoardThicknesses.length - 1),
           onSelected: (i) =>
               setState(() => layer.thicknessMm = _kBoardThicknesses[i]),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          '数量（自動）= 天井面積 ÷ ボード面積　切上げ　'
-          '$count 枚'
-          '（${area.toStringAsFixed(2)}㎡'
-          ' ÷ ${boardAreaM2.toStringAsFixed(3)}㎡）',
-          style: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w700,
-            color: AppTheme.navy,
-          ),
         ),
       ],
     );
@@ -1720,7 +1580,7 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
     );
   }
 
-  List<Widget> _channelSectionWidgets(int channels, int channelJoints) {
+  List<Widget> _channelSectionWidgets() {
     return [
       _sectionTitle(Ms.of(context).channel, kind: 'channel'),
       LockableCupertinoPicker(
@@ -1739,20 +1599,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
       _customLengthField(_ukeLen, onChanged: () => setState(() {})),
       const SizedBox(height: 8),
       _stockLengthPicker(_ukeLen),
-      const SizedBox(height: 6),
-      Text(
-        '数量（余り≥2000mmは次の赤線へ流用）　$channels 本',
-        style: const TextStyle(
-          fontSize: 14,
-          fontWeight: FontWeight.w700,
-          color: AppTheme.navy,
-        ),
-      ),
-      Text(
-        '赤線 ${_ukeLengthsMm.length} 本 / '
-        '合計 ${(_ukeLengthsMm.fold<double>(0, (a, b) => a + b) / 1000).toStringAsFixed(2)} m',
-        style: const TextStyle(fontSize: 12, color: AppTheme.steel),
-      ),
       _extraRowsFor('channel'),
       const SizedBox(height: 20),
       _sectionTitle(Ms.of(context).channelJoint),
@@ -1772,16 +1618,6 @@ class _CeilingMaterialSheetState extends State<CeilingMaterialSheet> {
             apply: () => _channelJointWidth = next,
           );
         },
-      ),
-      const SizedBox(height: 6),
-      Text(
-        '数量（自動）= 定尺継ぎ手　$channelJoints 個'
-        '${channelJoints == 0 ? '（継ぎなし）' : ''}',
-        style: const TextStyle(
-          fontSize: 14,
-          fontWeight: FontWeight.w700,
-          color: AppTheme.navy,
-        ),
       ),
       const SizedBox(height: 20),
     ];

@@ -1,0 +1,36 @@
+App Review Notes — LGS+積算 (jp.lgsplus.lgsPlus)
+
+【Demo account】
+Email: infinity801030@gmail.com
+Password: 111111
+(Free plan. Please Sign out any other session first, then Sign in with this account.)
+
+【Important — one device / one account】
+- Each physical device may be bound to only one account at a time.
+- Switching to a different account on the same device starts a 3-day wait, then a 7-day window to complete the switch.
+- If the previous reviewer session is still active, please Sign out from アカウント / Account first, then Sign in with the demo account.
+- Do not delete and reinstall the app repeatedly with different accounts on the same device during review.
+
+【How to review core flows】
+1. Sign in with the demo account above.
+2. Create a site (現場) from the home list (+).
+3. Upload a drawing (図面) from album or camera; calibrate scale if prompted.
+4. Measure walls / ceiling on the canvas; tap the red number badge to open materials / settings.
+5. Free plan: 1 drawing upload per month base (invite bonus can raise to max 3). Paid seat packs unlock unlimited uploads.
+6. Account → purchase a seat pack (Sandbox) to verify IAP; use Restore Purchases if needed.
+7. Account → アカウントを削除 / Delete account is available (password confirmation). Apple subscriptions must be cancelled separately in Settings → Subscriptions.
+
+【IAP product IDs】
+- lgsplus.team.1.monthly
+- lgsplus.team.5.monthly
+- lgsplus.team.10.monthly
+- lgsplus.team.15.monthly
+- lgsplus.team.20.monthly
+
+【Privacy】
+In-app: Login screen links to Privacy Policy / Terms (bundled).
+Public URL (App Store Connect Privacy Policy URL): https://shop.infmaxai.com/lgsplus-privacy.html
+
+【Notes】
+- Job data (sites / drawings / measurements) is stored on-device. App Store updates keep data; deleting the app removes it.
+- No third-party social login (Sign in with Apple not required).

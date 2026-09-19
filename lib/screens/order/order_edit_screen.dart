@@ -1,14 +1,13 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:printing/printing.dart';
 import 'package:provider/provider.dart';
-import 'package:share_plus/share_plus.dart';
 
 import '../../l10n/locale_controller.dart';
 import '../../models/models.dart';
 import '../../providers/app_state.dart';
+import '../../services/app_share.dart';
 import '../../services/pdf_order_exporter.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/keyboard_done.dart';
@@ -172,8 +171,14 @@ class _OrderEditScreenState extends State<OrderEditScreen> {
             children: [
               ListTile(title: Text(S.of(ctx).exportOrder)),
               ListTile(
-                leading: const Icon(Icons.share),
-                title: Text(S.of(ctx).shareLineEmail),
+                leading: const Icon(Icons.folder_outlined),
+                title: Text(S.of(ctx).saveLocally),
+                onTap: () => Navigator.pop(ctx, 'save'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.ios_share),
+                title: Text(S.of(ctx).shareSend),
+                subtitle: Text(S.of(ctx).shareLineEmail),
                 onTap: () => Navigator.pop(ctx, 'share'),
               ),
               ListTile(
@@ -191,17 +196,30 @@ class _OrderEditScreenState extends State<OrderEditScreen> {
         ),
       );
 
-      if (action == 'share') {
-        final dir = await getTemporaryDirectory();
-        final file = File('${dir.path}/LGS+_注文_${project.name}.pdf');
-        await file.writeAsBytes(bytes);
-        await SharePlus.instance.share(
-          ShareParams(
-            files: [XFile(file.path, mimeType: 'application/pdf')],
-            subject: '材料注文書 — ${project.name}',
-            text: '${project.name} の材料注文書です（LGS+）',
-          ),
+      if (action == 'save') {
+        if (!mounted) return;
+        final ok = await AppShare.saveBytes(
+          context: context,
+          bytes: bytes,
+          fileName: 'order_${project.name}.pdf',
         );
+        if (!ok && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(S.of(context).exportFailed)),
+          );
+        }
+      } else if (action == 'share') {
+        if (!mounted) return;
+        final ok = await AppShare.shareBytes(
+          context: context,
+          bytes: bytes,
+          fileName: 'order_${project.name}.pdf',
+        );
+        if (!ok && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(S.of(context).exportFailed)),
+          );
+        }
       } else if (action == 'print') {
         await Printing.layoutPdf(onLayout: (_) async => bytes);
       } else if (action == 'preview') {

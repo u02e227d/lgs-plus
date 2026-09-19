@@ -2,12 +2,13 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../l10n/locale_controller.dart';
+import '../../services/app_share.dart';
 import '../../services/invite_card.dart';
+import '../../services/lgsplus_cloud.dart';
 import '../../theme/app_theme.dart';
 
 /// メール画面に近い招待送信
@@ -50,7 +51,23 @@ class _InviteComposeScreenState extends State<InviteComposeScreen> {
     return '$head${_subject.text.trim()}\n\n${_body.text.trim()}';
   }
 
+  /// 宛先が既存アカウントなら false。空宛先は可。
+  Future<bool> _ensureDestCanInvite() async {
+    final dest = _to.text.trim();
+    if (dest.isEmpty) return true;
+    final taken = await LgsplusCloud.isFriendInviteDestRegistered(dest);
+    if (taken == true) {
+      if (!mounted) return false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(S.of(context).inviteFriendAlreadyRegistered)),
+      );
+      return false;
+    }
+    return true;
+  }
+
   Future<void> _copy() async {
+    if (!await _ensureDestCanInvite()) return;
     await Clipboard.setData(ClipboardData(text: _text));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -59,7 +76,9 @@ class _InviteComposeScreenState extends State<InviteComposeScreen> {
   }
 
   Future<void> _shareSheet() async {
-    await SharePlus.instance.share(ShareParams(text: _text));
+    if (!await _ensureDestCanInvite()) return;
+    if (!mounted) return;
+    await AppShare.share(context: context, text: _text);
   }
 
   Future<void> _open(Uri uri, String fallbackLabel) async {
@@ -73,6 +92,7 @@ class _InviteComposeScreenState extends State<InviteComposeScreen> {
   }
 
   Future<void> _sendLine() async {
+    if (!await _ensureDestCanInvite()) return;
     final uri = Uri.parse(
       'https://line.me/R/msg/text/?${Uri.encodeComponent(_text)}',
     );
@@ -80,6 +100,7 @@ class _InviteComposeScreenState extends State<InviteComposeScreen> {
   }
 
   Future<void> _sendWeChat() async {
+    if (!await _ensureDestCanInvite()) return;
     await Clipboard.setData(ClipboardData(text: _text));
     if (!mounted) return;
     final go = await showDialog<bool>(
@@ -102,14 +123,13 @@ class _InviteComposeScreenState extends State<InviteComposeScreen> {
     if (go != true || !mounted) return;
     try {
       final bytes = await InviteCard.png(inviteCode: widget.inviteCode);
-      final dir = await getTemporaryDirectory();
-      final file = File('${dir.path}/lgs_invite_${widget.inviteCode}.png');
+      final file =
+          await AppShare.tempFile('lgs_invite_${widget.inviteCode}.png');
       await file.writeAsBytes(bytes, flush: true);
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(file.path, mimeType: 'image/png')],
-          sharePositionOrigin: const Rect.fromLTWH(0, 0, 1, 1),
-        ),
+      if (!mounted) return;
+      await AppShare.share(
+        context: context,
+        files: [XFile(file.path, mimeType: 'image/png')],
       );
     } catch (_) {
       if (!mounted) return;
@@ -124,6 +144,7 @@ class _InviteComposeScreenState extends State<InviteComposeScreen> {
   }
 
   Future<void> _sendSms() async {
+    if (!await _ensureDestCanInvite()) return;
     final dest = _to.text.trim();
     final uri = dest.isEmpty
         ? Uri(scheme: 'sms', queryParameters: {'body': _text})
@@ -136,7 +157,17 @@ class _InviteComposeScreenState extends State<InviteComposeScreen> {
   }
 
   Future<void> _sendMail() async {
+    final mailLabel = S.of(context).mail;
+    if (!await _ensureDestCanInvite()) return;
     final dest = _to.text.trim();
+    if (dest.isEmpty ||
+        !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(dest)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(S.of(context).inviteNeedEmail)),
+      );
+      return;
+    }
     final uri = Uri(
       scheme: 'mailto',
       path: dest,
@@ -145,7 +176,7 @@ class _InviteComposeScreenState extends State<InviteComposeScreen> {
         'body': _body.text.trim(),
       },
     );
-    await _open(uri, S.of(context).mail);
+    await _open(uri, mailLabel);
   }
 
   @override

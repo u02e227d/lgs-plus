@@ -10,6 +10,7 @@ import '../models/models.dart';
 import '../services/estimate_builder.dart';
 import '../theme/app_theme.dart';
 import 'keyboard_done.dart';
+import 'mac_list_delete.dart';
 
 /// 試算表レイアウト（横画面固定・複数ページ）
 class OrderEstimateForm extends StatefulWidget {
@@ -737,7 +738,7 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
     // フィルタ切替で行が入れ替わっても古い TextFormFieldを再利用しない
     final rowKey = '$_filter-${e.id}-$i-${e.name}-${e.spec}-${e.lw}';
 
-    return IntrinsicHeight(
+    final row = IntrinsicHeight(
       key: ValueKey(rowKey),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -898,6 +899,25 @@ class _OrderEstimateFormState extends State<OrderEstimateForm> {
           ),
         ],
       ),
+    );
+
+    if (!widget.editable || !MacListDelete.isMac) return row;
+
+    return MacListDelete.wrap(
+      onDelete: () async {
+        final ms = Ms.of(context);
+        final s = S.of(context);
+        final label = e.name.trim().isEmpty ? 'No.${i + 1}' : e.name.trim();
+        final ok = await MacListDelete.confirm(
+          context: context,
+          title: ms.deleteRow,
+          body: s.deleteNamedConfirm(label),
+          sheetActionLabel: ms.deleteRow,
+        );
+        if (!ok || !mounted) return;
+        setState(() => _lines.removeAt(i));
+      },
+      child: row,
     );
   }
 }

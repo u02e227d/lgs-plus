@@ -58,6 +58,11 @@ class DrawingDimOcr {
             BoardStackSpec? stackA,
             BoardStackSpec? stackB,
           })>> recognizeHits(Uint8List imageBytes) async {
+    // google_mlkit_text_recognition は iOS/Android のみ
+    if (!Platform.isIOS && !Platform.isAndroid) {
+      return const [];
+    }
+
     final decoded = img.decodeImage(imageBytes);
     if (decoded == null) return const [];
 

@@ -3,15 +3,14 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
-import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../l10n/locale_controller.dart';
 import '../../l10n/s_measure.dart';
 import '../../models/models.dart';
 import '../../providers/app_state.dart';
+import '../../services/app_share.dart';
 import '../../services/pdf_order_exporter.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/keyboard_done.dart';
@@ -21,6 +20,7 @@ class OrderDocumentScreen extends StatefulWidget {
   const OrderDocumentScreen({
     super.key,
     required this.lines,
+    this.projectId,
     this.projectName,
     this.siteAddress,
     this.sitePhone,
@@ -29,9 +29,30 @@ class OrderDocumentScreen extends StatefulWidget {
     this.areaM2,
     this.appBarTitle = '注文書',
     this.deliveryDate,
+    this.issueDate,
+    this.initialMeta,
+    this.saveToHistory = true,
   });
 
+  /// 履历から開く（内容閲覧・再共有）
+  factory OrderDocumentScreen.fromHistory(OrderHistoryEntry entry) {
+    final meta = entry.meta;
+    return OrderDocumentScreen(
+      lines: entry.lines,
+      projectId: entry.projectId,
+      projectName: '${meta['projectName'] ?? meta['siteName'] ?? ''}',
+      siteAddress: '${meta['siteAddress'] ?? ''}',
+      sitePhone: '${meta['sitePhone'] ?? ''}',
+      siteContact: '${meta['receiver'] ?? meta['siteContact'] ?? ''}',
+      appBarTitle: entry.title,
+      issueDate: entry.issuedAt,
+      initialMeta: meta,
+      saveToHistory: false,
+    );
+  }
+
   final List<EstimateLine> lines;
+  final String? projectId;
   final String? projectName;
   final String? siteAddress;
   final String? sitePhone;
@@ -40,6 +61,11 @@ class OrderDocumentScreen extends StatefulWidget {
   final double? areaM2;
   final String appBarTitle;
   final DateTime? deliveryDate;
+  final DateTime? issueDate;
+  /// 履历メタ（customer / orderNo / company* / date labels 等）
+  final Map<String, dynamic>? initialMeta;
+  /// false＝履历閲覧（再エクスポートしても履历を増やさない）
+  final bool saveToHistory;
 
   @override
   State<OrderDocumentScreen> createState() => _OrderDocumentScreenState();
@@ -79,18 +105,30 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
       DeviceOrientation.landscapeRight,
     ]);
     final now = DateTime.now();
-    _issueDate = DateTime(now.year, now.month, now.day);
+    final meta = widget.initialMeta;
+    _issueDate = widget.issueDate ?? DateTime(now.year, now.month, now.day);
     final d = widget.deliveryDate ?? now.add(const Duration(days: 3));
     _deliveryDate = DateTime(d.year, d.month, d.day);
-    _customer = TextEditingController();
-    _siteName = TextEditingController(text: widget.projectName ?? '');
-    _siteAddress = TextEditingController(text: widget.siteAddress ?? '');
-    _receiver = TextEditingController(text: widget.siteContact ?? '');
-    _sitePhone = TextEditingController(text: widget.sitePhone ?? '');
-    _companyName = TextEditingController();
-    _companyAddress = TextEditingController();
-    _companyPhone = TextEditingController();
-    _orderNo = TextEditingController();
+    _customer = TextEditingController(text: '${meta?['customer'] ?? ''}');
+    _siteName = TextEditingController(
+      text: '${meta?['siteName'] ?? widget.projectName ?? ''}',
+    );
+    _siteAddress = TextEditingController(
+      text: '${meta?['siteAddress'] ?? widget.siteAddress ?? ''}',
+    );
+    _receiver = TextEditingController(
+      text: '${meta?['receiver'] ?? widget.siteContact ?? ''}',
+    );
+    _sitePhone = TextEditingController(
+      text: '${meta?['sitePhone'] ?? widget.sitePhone ?? ''}',
+    );
+    _companyName =
+        TextEditingController(text: '${meta?['companyName'] ?? ''}');
+    _companyAddress =
+        TextEditingController(text: '${meta?['companyAddress'] ?? ''}');
+    _companyPhone =
+        TextEditingController(text: '${meta?['companyPhone'] ?? ''}');
+    _orderNo = TextEditingController(text: '${meta?['orderNo'] ?? ''}');
     _lines = widget.lines
         .map(
           (e) => EstimateLine(
@@ -103,7 +141,7 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
             unit: e.unit,
             subtotal: e.subtotal,
             wastePercent: e.wastePercent,
-            note: '',
+            note: e.note,
           ),
         )
         .toList();
@@ -111,6 +149,10 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
   }
 
   Future<void> _loadMeta() async {
+    // 履历から開いた場合は保存済み顧客・会社で上書きしない
+    if (widget.initialMeta != null && widget.initialMeta!.isNotEmpty) {
+      return;
+    }
     final prefs = await SharedPreferences.getInstance();
     final savedCustomer = prefs.getString(_kCustomer) ?? '';
     if (!mounted) return;
@@ -120,10 +162,18 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
     } catch (_) {}
     if (!mounted) return;
     setState(() {
-      if (savedCustomer.isNotEmpty) _customer.text = savedCustomer;
-      _companyName.text = user?.companyName ?? '';
-      _companyAddress.text = user?.address ?? '';
-      _companyPhone.text = user?.phone ?? '';
+      if (savedCustomer.isNotEmpty && _customer.text.isEmpty) {
+        _customer.text = savedCustomer;
+      }
+      if (_companyName.text.isEmpty) {
+        _companyName.text = user?.companyName ?? '';
+      }
+      if (_companyAddress.text.isEmpty) {
+        _companyAddress.text = user?.address ?? '';
+      }
+      if (_companyPhone.text.isEmpty) {
+        _companyPhone.text = user?.phone ?? '';
+      }
     });
   }
 
@@ -191,7 +241,23 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
   }
 
   Future<void> _exportPdf() async {
+    try {
     final dateFmt = DateFormat('yyyy年M月d日');
+    final exportLines = [
+      for (final e in _lines)
+        EstimateLine(
+          id: e.id,
+          name: e.name,
+          spec: e.spec,
+          lw: _sizeOf(e),
+          lengthMm: e.lengthMm,
+          qty: e.qty,
+          unit: e.unit,
+          subtotal: e.subtotal,
+          wastePercent: e.wastePercent,
+          note: _noteCtrlFor(e).text.trim(),
+        ),
+    ];
     final bytes = await PdfOrderExporter.buildOrderDocument(
       title: widget.appBarTitle,
       customer: _customer.text.trim(),
@@ -205,41 +271,57 @@ class _OrderDocumentScreenState extends State<OrderDocumentScreen> {
       orderNo: _orderNo.text.trim(),
       issueDateLabel: dateFmt.format(_issueDate),
       deliveryDateLabel: dateFmt.format(_deliveryDate),
-      lines: [
-        for (final e in _lines)
-          EstimateLine(
-            id: e.id,
-            name: e.name,
-            spec: e.spec,
-            lw: _sizeOf(e),
-            lengthMm: e.lengthMm,
-            qty: e.qty,
-            unit: e.unit,
-            subtotal: e.subtotal,
-            wastePercent: e.wastePercent,
-            note: _noteCtrlFor(e).text.trim(),
-          ),
-      ],
+      lines: exportLines,
     );
     if (!mounted) return;
-    final dir = await getTemporaryDirectory();
     final stamp = DateFormat('yyyyMMdd_HHmm').format(DateTime.now());
-    final name = (widget.projectName ?? '注文書').replaceAll('/', '_');
-    final file = File('${dir.path}/注文書_${name}_$stamp.pdf');
-    await file.writeAsBytes(bytes);
-    if (!mounted) return;
-    final box = context.findRenderObject() as RenderBox?;
-    final origin = box == null
-        ? const Rect.fromLTWH(80, 40, 1, 1)
-        : Rect.fromLTWH(box.size.width - 80, 12, 64, 40);
-    await SharePlus.instance.share(
-      ShareParams(
-        files: [XFile(file.path, mimeType: 'application/pdf')],
-        subject: '${widget.appBarTitle} — $name',
-        text: '$name の注文書です（LGS+）',
-        sharePositionOrigin: origin,
-      ),
+    final name = (widget.projectName ?? 'order').replaceAll(RegExp(r'[/\\:\0]'), '_');
+    final ok = await AppShare.exportBytes(
+      context: context,
+      bytes: bytes,
+      fileName: 'order_${name}_$stamp.pdf',
     );
+    if (!ok) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(S.of(context).exportFailed)),
+      );
+      return;
+    }
+    final projectId = widget.projectId?.trim() ?? '';
+    if (!widget.saveToHistory || projectId.isEmpty || !mounted) return;
+    try {
+      final state = context.read<AppState>();
+      await state.db.upsertOrderHistory(
+        OrderHistoryEntry(
+          id: state.newId(),
+          projectId: projectId,
+          title: widget.appBarTitle,
+          issuedAt: _issueDate,
+          meta: {
+            'customer': _customer.text.trim(),
+            'siteName': _siteName.text.trim(),
+            'siteAddress': _siteAddress.text.trim(),
+            'receiver': _receiver.text.trim(),
+            'sitePhone': _sitePhone.text.trim(),
+            'companyName': _companyName.text.trim(),
+            'companyAddress': _companyAddress.text.trim(),
+            'companyPhone': _companyPhone.text.trim(),
+            'orderNo': _orderNo.text.trim(),
+            'issueDateLabel': dateFmt.format(_issueDate),
+            'deliveryDateLabel': dateFmt.format(_deliveryDate),
+            'projectName': widget.projectName ?? '',
+          },
+          lines: exportLines,
+        ),
+      );
+    } catch (_) {}
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(S.of(context).exportFailed)),
+      );
+    }
   }
 
   @override

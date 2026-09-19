@@ -7,48 +7,56 @@ void main() {
     expect(AccountPlan.normalizeInviteCode(' lgs-ab12cd '), 'LGS-AB12CD');
     expect(
       AccountPlan.inviteLink('LGS-AB12CD'),
-      'https://lgsplus.app/invite?code=LGS-AB12CD',
+      'https://shop.infmaxai.com/invite?code=LGS-AB12CD',
     );
     expect(AccountPlan.inviteBody('LGS-AB12CD').contains('LGS-AB12CD'), isTrue);
+    expect(AccountPlan.inviteBody('LGS-AB12CD').contains('双方'), isFalse);
+    expect(AccountPlan.inviteBody('LGS-AB12CD').contains('登録・ログインした方'), isTrue);
   });
 
-  test('利用日数は当日を含めて残り日を数える', () {
-    final user = AppUser(
-      id: 'u',
-      companyName: '山田太郎',
-      address: '',
-      contactName: '山田太郎',
-      phone: '090',
-      email: 'a@b.c',
-      createdAt: DateTime(2026, 9, 1),
-      accessUntil: DateTime(2026, 9, 15),
+  test('席位Product IDと席数', () {
+    expect(AccountPlan.seatsForProductId('lgsplus.team.5.monthly'), 5);
+    expect(AccountPlan.seatsForProductId('lgsplus.team.20.monthly'), 20);
+    expect(AccountPlan.seatsForProductId('lgsplus.mac.team.5.monthly'), 5);
+    expect(AccountPlan.seatsForProductId('lgsplus.premium.monthly'), 1);
+    expect(AccountPlan.monthlyProductId, 'lgsplus.team.1.monthly');
+    expect(AccountPlan.monthlyPriceYen, 9980);
+    expect(
+      AccountPlan.productIds.contains('lgsplus.mac.team.1.monthly'),
+      isTrue,
     );
-    expect(user.remainingDays(DateTime(2026, 9, 14)), 1);
-    expect(user.remainingDays(DateTime(2026, 9, 15)), 0);
-    expect(user.remainingDays(DateTime(2026, 9, 16)), 0);
   });
 
-  test('無料かつ期限切れは測定のみ、有料または残日数があれば全機能', () {
-    final freeExpired = AppUser(
+  test('無料はアップロード枠内で全機能、有料は無制限', () {
+    final free = AppUser(
       id: 'f',
       companyName: '無料',
       address: '',
       contactName: '無料',
       phone: '090',
       email: 'f@b.c',
+      activated: true,
       plan: SubscriptionPlan.free,
-      accessUntil: DateTime(2026, 9, 1),
+      uploadRemaining: 2,
     );
-    expect(freeExpired.hasFullAccess(DateTime(2026, 9, 14)), isFalse);
+    expect(free.hasFullAccess(), isTrue);
+    expect(free.canUploadDrawing, isTrue);
 
-    final bonus = freeExpired.copyWith(accessUntil: DateTime(2026, 9, 21));
-    expect(bonus.hasFullAccess(DateTime(2026, 9, 14)), isTrue);
+    final exhausted = free.copyWith(uploadRemaining: 0);
+    expect(exhausted.hasFullAccess(), isTrue);
+    expect(exhausted.canUploadDrawing, isFalse);
 
-    final paid = freeExpired.copyWith(plan: SubscriptionPlan.paid);
-    expect(paid.hasFullAccess(DateTime(2026, 9, 14)), isTrue);
+    final paid = free.copyWith(
+      plan: SubscriptionPlan.paid,
+      uploadUnlimited: true,
+      uploadRemaining: -1,
+      seatLimit: 5,
+    );
+    expect(paid.canUploadDrawing, isTrue);
+    expect(paid.seatLimit, 5);
   });
 
-  test('新規登録は7日間全機能、8日目から無料版', () {
+  test('新規登録はアップロード案内のみ', () {
     final now = DateTime(2026, 9, 14, 10);
     final user = AccountPlan.applySignupTrial(
       AppUser(
@@ -58,34 +66,16 @@ void main() {
         contactName: '新規',
         phone: '090',
         email: 'n@b.c',
+        activated: true,
         createdAt: now,
       ),
       now,
     );
-    expect(user.accessUntil, DateTime(2026, 9, 21, 10));
-    expect(user.hasFullAccess(DateTime(2026, 9, 14)), isTrue);
-    expect(user.hasFullAccess(DateTime(2026, 9, 20)), isTrue);
-    expect(user.hasFullAccess(DateTime(2026, 9, 21)), isFalse);
     expect(user.pendingNotice, AccountPlan.signupNotice);
+    expect(user.hasFullAccess(), isTrue);
   });
 
-  test('招待特典は現在の期限から1週間延長する', () {
-    final now = DateTime(2026, 9, 14, 10);
-    final user = AppUser(
-      id: 'u',
-      companyName: '山田太郎',
-      address: '',
-      contactName: '山田太郎',
-      phone: '090',
-      email: 'a@b.c',
-      accessUntil: DateTime(2026, 9, 10),
-    );
-    final next = AccountPlan.applyBonus(user, now);
-    expect(next.accessUntil, DateTime(2026, 9, 21, 10));
-    expect(next.pendingNotice, AccountPlan.bonusNotice);
-  });
-
-  test('有料をやめたら日数も消えて番号ページは見られない', () {
+  test('有料をやめたら席位と無制限アップロードを外す', () {
     final now = DateTime(2026, 9, 14, 10);
     final paid = AppUser(
       id: 'p',
@@ -94,12 +84,16 @@ void main() {
       contactName: '有料',
       phone: '090',
       email: 'p@b.c',
+      activated: true,
       plan: SubscriptionPlan.paid,
-      accessUntil: DateTime(2026, 10, 14, 10),
+      seatLimit: 5,
+      productId: 'lgsplus.team.5.monthly',
+      uploadUnlimited: true,
     );
-    expect(paid.hasFullAccess(now), isTrue);
     final canceled = AccountPlan.cancelPaid(paid, now);
     expect(canceled.isPaid, isFalse);
-    expect(canceled.hasFullAccess(now), isFalse);
+    expect(canceled.seatLimit, 0);
+    expect(canceled.productId, isNull);
+    expect(canceled.hasFullAccess(), isTrue);
   });
 }

@@ -16,10 +16,10 @@ class MeasureMousePainter extends CustomPainter {
   final bool visible;
 
   /// 画面ピクセルでの棒長（ズーム非連動）
-  static const double stemLengthScreen = 80;
+  static const double stemLengthScreen = 100;
   /// 先端ヒット用（円は描かない）
-  static const double tipRadius = 1.5;
-  static const double headScale = 1.15;
+  static const double tipRadius = 1.0;
+  static const double headScale = 1.55;
 
   /// 指（子座標）→ 先端（子座標）。[viewScale] は InteractiveViewer の現在倍率
   static Offset tipFromFinger(Offset fingerChild, double viewScale) {
@@ -35,26 +35,26 @@ class MeasureMousePainter extends CustomPainter {
     const s = headScale;
 
     // 細い軸（鋭い矢じり下から）
-    final stemTop = tip + Offset(0, 26 * s);
+    final stemTop = tip + Offset(0, 24 * s);
     final base = tip + const Offset(0, stemLengthScreen);
     canvas.drawLine(
       stemTop,
       base,
       Paint()
         ..color = dark
-        ..strokeWidth = 2.8
+        ..strokeWidth = 3.8
         ..strokeCap = StrokeCap.round,
     );
 
-    // 極細の鋭角矢印（先端をできるだけ尖らせる）
+    // 全体は少し広く、尖端だけ細く鋭く（頂点円は描かない）
     final path = Path()
-      ..moveTo(tip.dx, tip.dy) // 尖端
-      ..lineTo(tip.dx + 5.0 * s, tip.dy + 28 * s)
-      ..lineTo(tip.dx + 1.6 * s, tip.dy + 24 * s)
-      ..lineTo(tip.dx + 1.6 * s, tip.dy + 46 * s)
-      ..lineTo(tip.dx - 1.6 * s, tip.dy + 46 * s)
-      ..lineTo(tip.dx - 1.6 * s, tip.dy + 24 * s)
-      ..lineTo(tip.dx - 5.0 * s, tip.dy + 28 * s)
+      ..moveTo(tip.dx, tip.dy) // 尖端（幅ゼロ）
+      ..lineTo(tip.dx + 3.4 * s, tip.dy + 28 * s)
+      ..lineTo(tip.dx + 1.35 * s, tip.dy + 23 * s)
+      ..lineTo(tip.dx + 1.35 * s, tip.dy + 54 * s)
+      ..lineTo(tip.dx - 1.35 * s, tip.dy + 54 * s)
+      ..lineTo(tip.dx - 1.35 * s, tip.dy + 23 * s)
+      ..lineTo(tip.dx - 3.4 * s, tip.dy + 28 * s)
       ..close();
 
     canvas.drawPath(path, Paint()..color = color);
@@ -63,7 +63,7 @@ class MeasureMousePainter extends CustomPainter {
       Paint()
         ..color = Colors.white.withValues(alpha: 0.9)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 0.9
+        ..strokeWidth = 0.7
         ..strokeJoin = StrokeJoin.miter
         ..strokeMiterLimit = 12,
     );
@@ -129,15 +129,36 @@ class HoldProgressPainter extends CustomPainter {
     required this.center,
     required this.progress,
     required this.color,
+    this.showBaseRing = false,
+    this.radius = 14,
   });
   final Offset center;
   final double progress;
   final Color color;
+  final bool showBaseRing;
+  final double radius;
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (showBaseRing) {
+      canvas.drawCircle(
+        center,
+        radius,
+        Paint()
+          ..color = color.withValues(alpha: 0.18)
+          ..style = PaintingStyle.fill,
+      );
+      canvas.drawCircle(
+        center,
+        radius,
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.4,
+      );
+    }
     if (progress <= 0) return;
-    final rect = Rect.fromCircle(center: center, radius: 14);
+    final rect = Rect.fromCircle(center: center, radius: radius);
     canvas.drawArc(
       rect,
       -math.pi / 2,
@@ -146,14 +167,78 @@ class HoldProgressPainter extends CustomPainter {
       Paint()
         ..color = color
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3
+        ..strokeWidth = 3.2
         ..strokeCap = StrokeCap.round,
     );
   }
 
   @override
   bool shouldRepaint(covariant HoldProgressPainter oldDelegate) =>
-      progress != oldDelegate.progress || center != oldDelegate.center;
+      progress != oldDelegate.progress ||
+      center != oldDelegate.center ||
+      color != oldDelegate.color ||
+      showBaseRing != oldDelegate.showBaseRing ||
+      radius != oldDelegate.radius;
+}
+
+/// Mac：測点＝中心の十字＋赤→緑リング（矢印カーソルの「胴体」ズレを避ける）
+class MacMeasureTipPainter extends CustomPainter {
+  MacMeasureTipPainter({
+    required this.progress,
+    required this.color,
+  });
+
+  final double progress;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = Offset(size.width / 2, size.height / 2);
+    const ringR = 14.0;
+    const cross = 7.0;
+
+    canvas.drawCircle(
+      c,
+      ringR,
+      Paint()
+        ..color = color.withValues(alpha: 0.16)
+        ..style = PaintingStyle.fill,
+    );
+    canvas.drawCircle(
+      c,
+      ringR,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2,
+    );
+
+    if (progress > 0) {
+      canvas.drawArc(
+        Rect.fromCircle(center: c, radius: ringR),
+        -math.pi / 2,
+        2 * math.pi * progress.clamp(0.0, 1.0),
+        false,
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.0
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+
+    final crossPaint = Paint()
+      ..color = color
+      ..strokeWidth = 1.6
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(c + const Offset(-cross, 0), c + const Offset(cross, 0), crossPaint);
+    canvas.drawLine(c + const Offset(0, -cross), c + const Offset(0, cross), crossPaint);
+    canvas.drawCircle(c, 1.8, Paint()..color = color);
+  }
+
+  @override
+  bool shouldRepaint(covariant MacMeasureTipPainter oldDelegate) =>
+      progress != oldDelegate.progress || color != oldDelegate.color;
 }
 
 /// AI壁帯蛍光ペン（必ず視認できる最小幅）

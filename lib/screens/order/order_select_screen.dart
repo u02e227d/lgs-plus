@@ -9,6 +9,7 @@ import '../../providers/app_state.dart';
 import '../../theme/app_theme.dart';
 import '../../services/estimate_builder.dart';
 import 'order_document_screen.dart';
+import 'order_history_screen.dart';
 
 class _OrderPick {
   _OrderPick({
@@ -204,6 +205,7 @@ class _OrderSelectScreenState extends State<OrderSelectScreen> {
       MaterialPageRoute(
         builder: (_) => OrderDocumentScreen(
           lines: lines,
+          projectId: widget.projectId,
           projectName: _project?.name,
           siteAddress: _project?.address,
           sitePhone: _project?.phone,
@@ -221,7 +223,25 @@ class _OrderSelectScreenState extends State<OrderSelectScreen> {
   Widget build(BuildContext context) {
     final fmt = DateFormat('yyyy/MM/dd');
     return Scaffold(
-      appBar: AppBar(title: Text(S.of(context).orderSelectTitle)),
+      appBar: AppBar(
+        title: Text(S.of(context).orderSelectTitle),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) =>
+                      OrderHistoryScreen(projectId: widget.projectId),
+                ),
+              );
+            },
+            child: Text(
+              S.of(context).orderHistoryAction,
+              style: const TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : Column(

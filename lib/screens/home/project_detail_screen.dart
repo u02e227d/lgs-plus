@@ -2,9 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
-import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../l10n/locale_controller.dart';
@@ -12,9 +10,11 @@ import '../../l10n/s_measure.dart';
 import '../../models/models.dart';
 import '../../providers/app_state.dart';
 import '../../theme/app_theme.dart';
+import '../../services/app_share.dart';
 import '../../services/estimate_builder.dart';
 import '../../services/feature_access.dart';
 import '../../services/measure_drawing_exporter.dart';
+import '../../widgets/mac_list_delete.dart';
 import '../drawing/upload_drawing_screen.dart';
 import '../measure/estimate_table_screen.dart';
 import '../measure/measure_canvas_screen.dart';
@@ -30,6 +30,7 @@ class ProjectDetailScreen extends StatefulWidget {
 }
 
 class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
+  final _shareButtonKey = GlobalKey();
   SiteProject? _project;
   List<DrawingFile> _drawings = [];
   List<Measurement> _measurements = [];
@@ -189,6 +190,169 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
         .toList();
   }
 
+  Future<bool> _confirmDeleteItem({
+    required String title,
+    required String name,
+  }) {
+    final s = S.of(context);
+    return MacListDelete.confirm(
+      context: context,
+      title: title,
+      body: s.deleteNamedConfirm(name),
+      sheetActionLabel: s.delete,
+    );
+  }
+
+  Future<void> _deleteDrawing(DrawingFile d) async {
+    final s = S.of(context);
+    final ok = await _confirmDeleteItem(
+      title: s.deleteDrawing,
+      name: d.fileName,
+    );
+    if (!ok || !mounted) return;
+    await context.read<AppState>().db.deleteDrawing(d.id);
+    await _reload();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(s.deletedItem(d.fileName))),
+    );
+  }
+
+  Future<void> _deleteMeasurement(Measurement m) async {
+    final s = S.of(context);
+    final ok = await _confirmDeleteItem(
+      title: s.deleteMeasure,
+      name: m.name,
+    );
+    if (!ok || !mounted) return;
+    await context.read<AppState>().db.deleteMeasurement(m.id);
+    await _reload();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(s.deletedItem(m.name))),
+    );
+  }
+
+  Measurement _clearedEstimate(
+    Measurement m,
+    EstimateSheetKind kind, {
+    required String areaLabel,
+  }) {
+    final ceiling = areaLabel == '天井';
+    switch (kind) {
+      case EstimateSheetKind.board:
+        if (ceiling) {
+          return m.copyWith(
+            ceilingBoardEstimate: const [],
+            boardEstimate: m.boardEstimate
+                .where((e) => EstimateBuilder.resolveAreaKind(e) != 'ceiling')
+                .toList(),
+          );
+        }
+        return m.copyWith(
+          boardEstimate: m.boardEstimate
+              .where((e) => !EstimateBuilder.isWallAreaKind(e))
+              .toList(),
+        );
+      case EstimateSheetKind.lgs:
+        if (ceiling) {
+          return m.copyWith(
+            ceilingLgsEstimate: const [],
+            lgsEstimate: m.lgsEstimate
+                .where((e) => EstimateBuilder.resolveAreaKind(e) != 'ceiling')
+                .toList(),
+          );
+        }
+        return m.copyWith(
+          lgsEstimate: m.lgsEstimate
+              .where((e) => !EstimateBuilder.isWallAreaKind(e))
+              .toList(),
+        );
+      case EstimateSheetKind.cross:
+        return m.copyWith(crossEstimate: const []);
+      case EstimateSheetKind.drop:
+        return m.copyWith(dropEstimate: const []);
+    }
+  }
+
+  Future<void> _deleteEstimateCard({
+    required Measurement m,
+    required EstimateSheetKind kind,
+    required String title,
+    String areaLabel = '壁',
+  }) async {
+    final s = S.of(context);
+    final ok = await _confirmDeleteItem(title: s.delete, name: title);
+    if (!ok || !mounted) return;
+    final updated = _clearedEstimate(m, kind, areaLabel: areaLabel);
+    await context.read<AppState>().saveMeasurement(updated);
+    await _reload();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(s.deletedItem(title))),
+    );
+  }
+
+  Widget _estimateCard({
+    required Measurement m,
+    required EstimateSheetKind kind,
+    required String title,
+    required String subtitle,
+    required IconData icon,
+    String areaLabel = '壁',
+  }) {
+    final s = S.of(context);
+    final tile = ListTile(
+      leading: Icon(icon),
+      title: Text(title),
+      subtitle: Text(subtitle),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () => _openSavedEstimate(m, kind, areaLabel: areaLabel),
+    );
+    return Card(
+      clipBehavior: Clip.hardEdge,
+      child: Dismissible(
+        key: ValueKey('est_${m.id}_${kind.name}_$areaLabel'),
+        direction: DismissDirection.endToStart,
+        confirmDismiss: (_) => MacListDelete.confirm(
+          context: context,
+          title: s.delete,
+          body: s.deleteNamedConfirm(title),
+        ),
+        onDismissed: (_) async {
+          final updated = _clearedEstimate(m, kind, areaLabel: areaLabel);
+          await context.read<AppState>().saveMeasurement(updated);
+          await _reload();
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(s.deletedItem(title))),
+          );
+        },
+        background: Container(
+          alignment: Alignment.centerRight,
+          padding: const EdgeInsets.only(right: 20),
+          color: AppTheme.danger,
+          child: Text(
+            s.delete,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        child: MacListDelete.wrap(
+          onDelete: () => _deleteEstimateCard(
+            m: m,
+            kind: kind,
+            title: title,
+            areaLabel: areaLabel,
+          ),
+          child: tile,
+        ),
+      ),
+    );
+  }
+
   Future<List<Measurement>?> _pickExportMeasurements(
     List<Measurement> candidates,
   ) async {
@@ -326,24 +490,20 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
         drawingsById: drawingsById,
       );
       if (!mounted) return;
-      final dir = await getTemporaryDirectory();
       final stamp = DateFormat('yyyyMMdd_HHmm').format(DateTime.now());
-      final safe = project.name.replaceAll('/', '_');
-      final file = File('${dir.path}/測定_${safe}_$stamp.pdf');
-      await file.writeAsBytes(bytes, flush: true);
-      if (!mounted) return;
-      final box = context.findRenderObject() as RenderBox?;
-      final origin = box == null
-          ? const Rect.fromLTWH(80, 40, 1, 1)
-          : Rect.fromLTWH(box.size.width - 160, 12, 72, 40);
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(file.path, mimeType: 'application/pdf')],
-          subject: s.exportSubject(project.name),
-          text: s.exportSubject(project.name),
-          sharePositionOrigin: origin,
-        ),
+      final safe = project.name.replaceAll(RegExp(r'[/\\:\0]'), '_');
+      final fileName = 'measure_${safe}_$stamp.pdf';
+      final shareCtx = _shareButtonKey.currentContext ?? context;
+      final ok = await AppShare.exportBytes(
+        context: shareCtx,
+        bytes: bytes,
+        fileName: fileName,
       );
+      if (!ok && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(s.exportFailed)),
+        );
+      }
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -461,6 +621,7 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
           Padding(
             padding: const EdgeInsets.only(right: 4),
             child: IconButton(
+              key: _shareButtonKey,
               tooltip: s.export,
               style: IconButton.styleFrom(
                 foregroundColor: Colors.white,
@@ -542,6 +703,10 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                       Expanded(
                         child: ElevatedButton.icon(
                           onPressed: () async {
+                            if (!await FeatureAccess.requireUploadSlot(context)) {
+                              return;
+                            }
+                            if (!mounted) return;
                             await Navigator.of(context).push(
                               MaterialPageRoute(
                                 builder: (_) => UploadDrawingScreen(
@@ -586,57 +751,10 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                         child: Dismissible(
                           key: ValueKey('drawing_${d.id}'),
                           direction: DismissDirection.endToStart,
-                          confirmDismiss: (direction) async {
-                            final action = await showModalBottomSheet<String>(
-                              context: context,
-                              builder: (ctx) => SafeArea(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    ListTile(
-                                      leading: const Icon(
-                                        Icons.delete_outline,
-                                        color: AppTheme.danger,
-                                      ),
-                                      title: Text(s.delete),
-                                      onTap: () => Navigator.pop(ctx, 'delete'),
-                                    ),
-                                    ListTile(
-                                      leading: const Icon(Icons.close),
-                                      title: Text(s.cancel),
-                                      onTap: () =>
-                                          Navigator.pop(ctx, 'cancel'),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                            if (action != 'delete') return false;
-                            if (!mounted) return false;
-                            final ok = await showDialog<bool>(
-                              context: context,
-                              builder: (ctx) => AlertDialog(
-                                title: Text(s.deleteDrawing),
-                                content: Text(
-                                  s.deleteNamedConfirm(d.fileName),
-                                ),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(ctx, false),
-                                    child: Text(s.cancel),
-                                  ),
-                                  ElevatedButton(
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: AppTheme.danger,
-                                    ),
-                                    onPressed: () => Navigator.pop(ctx, true),
-                                    child: Text(s.deleteAction),
-                                  ),
-                                ],
-                              ),
-                            );
-                            return ok == true;
-                          },
+                          confirmDismiss: (_) => _confirmDeleteItem(
+                            title: s.deleteDrawing,
+                            name: d.fileName,
+                          ),
                           onDismissed: (_) async {
                             await context
                                 .read<AppState>()
@@ -645,7 +763,9 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                             await _reload();
                             if (!mounted) return;
                             ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text(s.deletedItem(d.fileName))),
+                              SnackBar(
+                                content: Text(s.deletedItem(d.fileName)),
+                              ),
                             );
                           },
                           background: Container(
@@ -660,30 +780,35 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                               ),
                             ),
                           ),
-                          child: ListTile(
-                            leading: Icon(
-                              d.kind == 'pdf'
-                                  ? Icons.picture_as_pdf
-                                  : Icons.image_outlined,
-                              color: AppTheme.navy,
-                            ),
-                            title: Text(d.fileName),
-                            subtitle: Text(
-                              d.scalePxPerMm == null
-                                  ? s.scaleUnsetTap
-                                  : s.scaleK(d.scalePxPerMm!.toStringAsFixed(4)),
-                            ),
-                            onTap: () async {
-                              await Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) => UploadDrawingScreen(
-                                    projectId: widget.projectId,
-                                    existing: d,
+                          child: MacListDelete.wrap(
+                            onDelete: () => _deleteDrawing(d),
+                            child: ListTile(
+                              leading: Icon(
+                                d.kind == 'pdf'
+                                    ? Icons.picture_as_pdf
+                                    : Icons.image_outlined,
+                                color: AppTheme.navy,
+                              ),
+                              title: Text(d.fileName),
+                              subtitle: Text(
+                                d.scalePxPerMm == null
+                                    ? s.scaleUnsetTap
+                                    : s.scaleK(
+                                        d.scalePxPerMm!.toStringAsFixed(4),
+                                      ),
+                              ),
+                              onTap: () async {
+                                await Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => UploadDrawingScreen(
+                                      projectId: widget.projectId,
+                                      existing: d,
+                                    ),
                                   ),
-                                ),
-                              );
-                              await _reload();
-                            },
+                                );
+                                await _reload();
+                              },
+                            ),
                           ),
                         ),
                       );
@@ -706,58 +831,10 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                           child: Dismissible(
                             key: ValueKey('measurement_${m.id}'),
                             direction: DismissDirection.endToStart,
-                            confirmDismiss: (direction) async {
-                              final action = await showModalBottomSheet<String>(
-                                context: context,
-                                builder: (ctx) => SafeArea(
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      ListTile(
-                                        leading: const Icon(
-                                          Icons.delete_outline,
-                                          color: AppTheme.danger,
-                                        ),
-                                        title: Text(s.delete),
-                                        onTap: () =>
-                                            Navigator.pop(ctx, 'delete'),
-                                      ),
-                                      ListTile(
-                                        leading: const Icon(Icons.close),
-                                        title: Text(s.cancel),
-                                        onTap: () =>
-                                            Navigator.pop(ctx, 'cancel'),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              );
-                              if (action != 'delete') return false;
-                              if (!mounted) return false;
-                              final ok = await showDialog<bool>(
-                                context: context,
-                                builder: (ctx) => AlertDialog(
-                                  title: Text(s.deleteMeasure),
-                                  content: Text(s.deleteNamedConfirm(m.name)),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () =>
-                                          Navigator.pop(ctx, false),
-                                      child: Text(s.cancel),
-                                    ),
-                                    ElevatedButton(
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: AppTheme.danger,
-                                      ),
-                                      onPressed: () =>
-                                          Navigator.pop(ctx, true),
-                                      child: Text(s.deleteAction),
-                                    ),
-                                  ],
-                                ),
-                              );
-                              return ok == true;
-                            },
+                            confirmDismiss: (_) => _confirmDeleteItem(
+                              title: s.deleteMeasure,
+                              name: m.name,
+                            ),
                             onDismissed: (_) async {
                               await context
                                   .read<AppState>()
@@ -767,7 +844,8 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                               if (!mounted) return;
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
-                                    content: Text(s.deletedItem(m.name))),
+                                  content: Text(s.deletedItem(m.name)),
+                                ),
                               );
                             },
                             background: Container(
@@ -782,27 +860,31 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                                 ),
                               ),
                             ),
-                            child: ListTile(
-                              leading: const Icon(Icons.architecture),
-                              title: Text(m.name),
-                              subtitle: Text(s.wallCeilingCount(wallN, ceilN)),
-                              trailing: const Icon(Icons.chevron_right),
-                              onTap: () async {
-                                final drawing = await context
-                                    .read<AppState>()
-                                    .db
-                                    .getDrawing(m.drawingId);
-                                if (drawing == null || !mounted) return;
-                                await Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (_) => MeasureCanvasScreen(
-                                      measurementId: m.id,
-                                      drawing: drawing,
+                            child: MacListDelete.wrap(
+                              onDelete: () => _deleteMeasurement(m),
+                              child: ListTile(
+                                leading: const Icon(Icons.architecture),
+                                title: Text(m.name),
+                                subtitle:
+                                    Text(s.wallCeilingCount(wallN, ceilN)),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () async {
+                                  final drawing = await context
+                                      .read<AppState>()
+                                      .db
+                                      .getDrawing(m.drawingId);
+                                  if (drawing == null || !mounted) return;
+                                  await Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                      builder: (_) => MeasureCanvasScreen(
+                                        measurementId: m.id,
+                                        drawing: drawing,
+                                      ),
                                     ),
-                                  ),
-                                );
-                                await _reload();
-                              },
+                                  );
+                                  await _reload();
+                                },
+                              ),
                             ),
                           ),
                         ),
@@ -810,106 +892,77 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
 
                       if (_wallBoardLines(m).isNotEmpty) {
                         tiles.add(
-                          Card(
-                            child: ListTile(
-                              leading: const Icon(Icons.grid_on),
-                              title: Text(s.boardEstimateWall(m.name)),
-                              subtitle: Text(s.estimateLines(_wallBoardLines(m).length)),
-                              trailing: const Icon(Icons.chevron_right),
-                              onTap: () => _openSavedEstimate(
-                                m,
-                                EstimateSheetKind.board,
-                                areaLabel: '壁',
-                              ),
-                            ),
+                          _estimateCard(
+                            m: m,
+                            kind: EstimateSheetKind.board,
+                            title: s.boardEstimateWall(m.name),
+                            subtitle:
+                                s.estimateLines(_wallBoardLines(m).length),
+                            icon: Icons.grid_on,
+                            areaLabel: '壁',
                           ),
                         );
                       }
                       if (_ceilingBoardLines(m).isNotEmpty) {
                         tiles.add(
-                          Card(
-                            child: ListTile(
-                              leading: const Icon(Icons.grid_on),
-                              title: Text(s.boardEstimateCeil(m.name)),
-                              subtitle:
-                                  Text(s.estimateLines(_ceilingBoardLines(m).length)),
-                              trailing: const Icon(Icons.chevron_right),
-                              onTap: () => _openSavedEstimate(
-                                m,
-                                EstimateSheetKind.board,
-                                areaLabel: '天井',
-                              ),
-                            ),
+                          _estimateCard(
+                            m: m,
+                            kind: EstimateSheetKind.board,
+                            title: s.boardEstimateCeil(m.name),
+                            subtitle: s
+                                .estimateLines(_ceilingBoardLines(m).length),
+                            icon: Icons.grid_on,
+                            areaLabel: '天井',
                           ),
                         );
                       }
                       if (_wallLgsLines(m).isNotEmpty) {
                         tiles.add(
-                          Card(
-                            child: ListTile(
-                              leading: const Icon(Icons.view_column),
-                              title: Text(s.lgsEstimateWall(m.name)),
-                              subtitle: Text(s.estimateLines(_wallLgsLines(m).length)),
-                              trailing: const Icon(Icons.chevron_right),
-                              onTap: () => _openSavedEstimate(
-                                m,
-                                EstimateSheetKind.lgs,
-                                areaLabel: '壁',
-                              ),
-                            ),
+                          _estimateCard(
+                            m: m,
+                            kind: EstimateSheetKind.lgs,
+                            title: s.lgsEstimateWall(m.name),
+                            subtitle:
+                                s.estimateLines(_wallLgsLines(m).length),
+                            icon: Icons.view_column,
+                            areaLabel: '壁',
                           ),
                         );
                       }
                       if (_ceilingLgsLines(m).isNotEmpty) {
                         tiles.add(
-                          Card(
-                            child: ListTile(
-                              leading: const Icon(Icons.view_column),
-                              title: Text(s.lgsEstimateCeil(m.name)),
-                              subtitle:
-                                  Text(s.estimateLines(_ceilingLgsLines(m).length)),
-                              trailing: const Icon(Icons.chevron_right),
-                              onTap: () => _openSavedEstimate(
-                                m,
-                                EstimateSheetKind.lgs,
-                                areaLabel: '天井',
-                              ),
-                            ),
+                          _estimateCard(
+                            m: m,
+                            kind: EstimateSheetKind.lgs,
+                            title: s.lgsEstimateCeil(m.name),
+                            subtitle:
+                                s.estimateLines(_ceilingLgsLines(m).length),
+                            icon: Icons.view_column,
+                            areaLabel: '天井',
                           ),
                         );
                       }
                       if (m.crossEstimate.isNotEmpty) {
                         tiles.add(
-                          Card(
-                            child: ListTile(
-                              leading: const Icon(Icons.wallpaper),
-                              title: Text(s.crossEstimate(m.name)),
-                              subtitle:
-                                  Text(s.estimateLines(m.crossEstimate.length)),
-                              trailing: const Icon(Icons.chevron_right),
-                              onTap: () => _openSavedEstimate(
-                                m,
-                                EstimateSheetKind.cross,
-                              ),
-                            ),
+                          _estimateCard(
+                            m: m,
+                            kind: EstimateSheetKind.cross,
+                            title: s.crossEstimate(m.name),
+                            subtitle:
+                                s.estimateLines(m.crossEstimate.length),
+                            icon: Icons.wallpaper,
                           ),
                         );
                       }
                       if (m.dropEstimate.isNotEmpty) {
                         tiles.add(
-                          Card(
-                            child: ListTile(
-                              leading:
-                                  const Icon(Icons.vertical_align_bottom),
-                              title: Text(s.dropEstimate(m.name)),
-                              subtitle:
-                                  Text(s.estimateLines(m.dropEstimate.length)),
-                              trailing: const Icon(Icons.chevron_right),
-                              onTap: () => _openSavedEstimate(
-                                m,
-                                EstimateSheetKind.drop,
-                              ),
-                            ),
+                          _estimateCard(
+                            m: m,
+                            kind: EstimateSheetKind.drop,
+                            title: s.dropEstimate(m.name),
+                            subtitle:
+                                s.estimateLines(m.dropEstimate.length),
+                            icon: Icons.vertical_align_bottom,
                           ),
                         );
                       }

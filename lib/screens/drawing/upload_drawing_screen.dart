@@ -12,6 +12,7 @@ import '../../l10n/locale_controller.dart';
 import '../../models/models.dart';
 import '../../providers/app_state.dart';
 import '../../services/auth_service.dart';
+import '../../services/feature_access.dart';
 import '../../theme/app_theme.dart';
 import 'scale_calibration_screen.dart';
 
@@ -41,6 +42,9 @@ class _UploadDrawingScreenState extends State<UploadDrawingScreen> {
 
   /// フォルダ／ファイルから取り込み（PDF・画像）
   Future<void> _importFromFolder() async {
+    final isNew = widget.existing == null;
+    if (isNew && !await FeatureAccess.requireUploadSlot(context)) return;
+    if (!mounted) return;
     final files = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: const ['pdf', 'png', 'jpg', 'jpeg', 'heic', 'webp'],
@@ -51,6 +55,14 @@ class _UploadDrawingScreenState extends State<UploadDrawingScreen> {
     final f = files.first;
     setState(() => _busy = true);
     try {
+      if (isNew) {
+        final ok = await context.read<AppState>().consumeDrawingUpload();
+        if (!ok) {
+          if (!mounted) return;
+          await FeatureAccess.requireUploadSlot(context);
+          return;
+        }
+      }
       late Uint8List bytes;
       if (f.path != null) {
         bytes = await File(f.path!).readAsBytes();
@@ -112,6 +124,9 @@ class _UploadDrawingScreenState extends State<UploadDrawingScreen> {
   }
 
   Future<void> _importFromAlbum() async {
+    final isNew = widget.existing == null;
+    if (isNew && !await FeatureAccess.requireUploadSlot(context)) return;
+    if (!mounted) return;
     final picker = ImagePicker();
     final x = await picker.pickImage(
       source: ImageSource.gallery,
@@ -120,6 +135,14 @@ class _UploadDrawingScreenState extends State<UploadDrawingScreen> {
     if (x == null) return;
     setState(() => _busy = true);
     try {
+      if (isNew) {
+        final ok = await context.read<AppState>().consumeDrawingUpload();
+        if (!ok) {
+          if (!mounted) return;
+          await FeatureAccess.requireUploadSlot(context);
+          return;
+        }
+      }
       final saved = await DrawingImportService.persistFile(
         File(x.path),
         x.name,

@@ -7,6 +7,7 @@ import 'l10n/locale_controller.dart';
 import 'providers/app_state.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/home/project_list_screen.dart';
+import 'services/notice_unread_controller.dart';
 import 'theme/app_theme.dart';
 
 class LgsPlusApp extends StatelessWidget {
@@ -67,6 +68,7 @@ class _RootGateState extends State<_RootGate> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && mounted) {
       context.read<AppState>().checkDeviceSession();
+      NoticeUnreadController.instance.refreshNow();
     }
   }
 

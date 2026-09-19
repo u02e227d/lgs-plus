@@ -7,6 +7,7 @@ void main() {
   AppUser user({
     SubscriptionPlan plan = SubscriptionPlan.free,
     DateTime? accessUntil,
+    bool activated = false,
   }) =>
       AppUser(
         id: 'u1',
@@ -15,6 +16,7 @@ void main() {
         contactName: 'テスト',
         phone: '090',
         email: 'a@b.c',
+        activated: activated,
         plan: plan,
         accessUntil: accessUntil ?? DateTime(2026, 9, 1),
       );
@@ -29,7 +31,7 @@ void main() {
     expect(merged.isPaid, isFalse);
   });
 
-  test('サーバーが有料なら特典期限内のローカルも有料にする', () {
+  test('サーバーが有料ならローカルも有料にする', () {
     final merged = LgsplusCloud.applyServer(
       user(accessUntil: DateTime(2026, 9, 20)),
       {
@@ -40,17 +42,19 @@ void main() {
     expect(merged.isPaid, isTrue);
   });
 
-  test('解約して期限切れならサーバーの有料残日で番号ページを戻さない', () {
-    final local = user(
-      accessUntil: DateTime(2026, 9, 13),
+  test('Apple購読中ならローカルも有料にする', () {
+    final merged = LgsplusCloud.applyServer(
+      user(accessUntil: DateTime(2026, 9, 1)),
+      {
+        'plan': 'free',
+        'apple_status': 'SUBSCRIBED',
+        'access_until': '2026-10-14',
+        'org': {'seat_limit': 5, 'product_id': 'lgsplus.team.5.monthly'},
+      },
     );
-    expect(local.hasFullAccess(DateTime(2026, 9, 14)), isFalse);
-    final merged = LgsplusCloud.applyServer(local, {
-      'plan': 'paid',
-      'access_until': '2026-10-14 12:00:00',
-    });
-    expect(merged.isPaid, isFalse);
-    expect(merged.hasFullAccess(DateTime(2026, 9, 14)), isFalse);
+    expect(merged.isPaid, isTrue);
+    expect(merged.seatLimit, 5);
+    expect(merged.uploadUnlimited, isTrue);
   });
 
   test('Apple期限切れは有料を落とす', () {
@@ -63,18 +67,26 @@ void main() {
       },
     );
     expect(merged.isPaid, isFalse);
+    expect(merged.uploadUnlimited, isFalse);
   });
 
-  test('サーバーが7日以上延ばしたら招待特典のお知らせを付ける', () {
-    final local = user(accessUntil: DateTime(2026, 9, 10));
-    final merged = LgsplusCloud.applyServer(local, {
+  test('アップロード枠をサーバーから取り込む', () {
+    final merged = LgsplusCloud.applyServer(user(activated: true), {
       'plan': 'free',
-      'access_until': '2026-09-17 12:00:00',
+      'upload_quota': {
+        'remaining': 1,
+        'limit': 6,
+        'used': 2,
+        'bonus': 3,
+        'unlimited': 0,
+      },
     });
-    expect(merged.pendingNotice, AccountPlan.bonusNotice);
+    expect(merged.uploadRemaining, 1);
+    expect(merged.uploadLimit, 6);
+    expect(merged.uploadBonus, 3);
   });
 
-  test('サーバーの採用お知らせを表示する', () {
+  test('サーバーのお知らせを表示する', () {
     final local = user(accessUntil: DateTime(2026, 9, 10));
     final merged = LgsplusCloud.applyServer(local, {
       'plan': 'free',
@@ -117,9 +129,11 @@ void main() {
     expect(payload['device_id'], 'dev-1');
     expect(payload['claim'], 1);
     expect(payload['device_label'], 'iOS');
+    expect(payload['client_app'], isNotEmpty);
+    expect(['ios', 'mac'], contains(payload['client_app']));
   });
 
-  test('テストユーザーの余り試用はサーバー期限で戻さない', () {
+  test('テストユーザーはサーバー有料で戻さない', () {
     final local = AppUser(
       id: 't1',
       companyName: 'テスト建設',
@@ -132,9 +146,91 @@ void main() {
     );
     final merged = LgsplusCloud.applyServer(local, {
       'plan': 'paid',
+      'apple_status': 'SUBSCRIBED',
       'access_until': '2026-09-20 12:00:00',
     });
     expect(merged.isPaid, isFalse);
-    expect(merged.accessUntil, DateTime(2026, 9, 1));
+  });
+
+  test('席位メンバーは org から有料になる', () {
+    final local = user(accessUntil: DateTime(2026, 9, 1));
+    final merged = LgsplusCloud.applyServer(local, {
+      'plan': 'free',
+      'org': {
+        'seat_limit': 5,
+        'product_id': 'lgsplus.team.5.monthly',
+        'status': 'active',
+        'owner_user_id': 'owner-1',
+      },
+      'upload_quota': {'unlimited': 1, 'remaining': -1, 'limit': -1},
+    });
+    expect(merged.isPaid, isTrue);
+    expect(merged.uploadUnlimited, isTrue);
+    expect(merged.seatLimit, 5);
+    expect(merged.orgOwnerUserId, 'owner-1');
+    expect(merged.isOrgOwner, isFalse);
+  });
+
+  test('OrgTeamSnapshot は残席を計算する', () {
+    final team = OrgTeamSnapshot.fromJson({
+      'org': {'seat_limit': 5, 'seats_used': 2},
+      'members': [
+        {'email': 'owner@x.com', 'role': 'owner'},
+      ],
+      'invites': [
+        {'email': 'pending@x.com', 'status': 'pending'},
+      ],
+    });
+    expect(team.seatLimit, 5);
+    expect(team.seatsUsed, 2);
+    expect(team.remaining, 3);
+    expect(team.members, hasLength(1));
+    expect(team.pendingInvites, hasLength(1));
+  });
+
+  test('サーバー文字列数値でも AppUser.fromMap できる', () {
+    final user = AppUser.fromMap({
+      'id': 'u1',
+      'company_name': 'ABC',
+      'address': '横浜',
+      'contact_name': '田中',
+      'phone': '080',
+      'email': 'a@b.c',
+      'activated': '0',
+      'created_at': '2026-09-16T12:00:00',
+      'invite_code': 'LGS-TEST',
+      'plan': 'free',
+      'upload_bonus': '0',
+      'seat_limit': '0',
+      'upload_quota': {
+        'remaining': '3',
+        'limit': '3',
+        'used': '0',
+        'bonus': '0',
+        'unlimited': '0',
+      },
+      'org': {'seat_limit': '5', 'product_id': 'lgsplus.team.5.monthly'},
+    });
+    expect(user.uploadBonus, 0);
+    expect(user.uploadRemaining, 3);
+    expect(user.seatLimit, 5);
+    expect(user.activated, isFalse);
+  });
+
+  test('toPayload は password_hash と address を送る', () {
+    final local = AppUser(
+      id: 'u1',
+      companyName: 'テスト建設',
+      address: '東京都',
+      contactName: 'テスト',
+      phone: '090',
+      email: 'a@b.c',
+      passwordHash: 'abc123',
+      activated: true,
+      accessUntil: DateTime(2026, 10, 1),
+    );
+    final payload = LgsplusCloud.toPayload(local);
+    expect(payload['password_hash'], 'abc123');
+    expect(payload['address'], '東京都');
   });
 }

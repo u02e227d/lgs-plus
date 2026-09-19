@@ -103,12 +103,14 @@ class WallThicknessAnalyzer {
     final sb = stackB ?? stackA;
     final sides =
         stackB == null ? WallSides.single : WallSides.both;
+    // 仕上壁厚 = ランナー幅 + ボード（スタッド幅・内法ではない）
+    final runnerW = form.studWidthMm;
     final finished = finishedMm ??
-        (form.studWidthMm + stackA.totalMm + (sides == WallSides.both ? sb.totalMm : 0));
-    final offsetA = form.studWidthMm / 2 + stackA.totalMm;
+        (runnerW + stackA.totalMm + (sides == WallSides.both ? sb.totalMm : 0));
+    final offsetA = runnerW / 2 + stackA.totalMm;
     final offsetB = sides == WallSides.both
-        ? form.studWidthMm / 2 + sb.totalMm
-        : form.studWidthMm / 2;
+        ? runnerW / 2 + sb.totalMm
+        : runnerW / 2;
     final preset = _nearestPreset(form, stackA, sides);
     final summary = StringBuffer()
       ..writeln(
@@ -159,12 +161,14 @@ class WallThicknessAnalyzer {
           for (final sides in WallSides.values) {
             final boardA = sa.totalMm;
             final boardB = sides == WallSides.both ? sb.totalMm : 0.0;
-            final pred = form.studWidthMm + boardA + boardB;
+            // 仕上壁厚 = ランナー幅 + ボード（スタッド幅ではない）
+            final runnerW = form.studWidthMm;
+            final pred = runnerW + boardA + boardB;
             final err = (pred - finished).abs();
-            final predA = form.studWidthMm / 2 + boardA;
+            final predA = runnerW / 2 + boardA;
             final predB = sides == WallSides.both
-                ? form.studWidthMm / 2 + boardB
-                : form.studWidthMm / 2;
+                ? runnerW / 2 + boardB
+                : runnerW / 2;
             final errOff =
                 (predA - offsetA).abs() + (predB - offsetB).abs();
             var score = err * 2.0 + errOff * 0.5;

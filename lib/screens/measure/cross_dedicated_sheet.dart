@@ -213,6 +213,9 @@ class _CrossDedicatedSheetState extends State<CrossDedicatedSheet> {
             Expanded(
               child: KeyboardDoneScope(
                 child: ListView(
+                  physics: const ClampingScrollPhysics(),
+                  keyboardDismissBehavior:
+                      ScrollViewKeyboardDismissBehavior.onDrag,
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
                   children: [
               if (!widget.showWallFaces) ...[
@@ -269,7 +272,7 @@ class _CrossDedicatedSheetState extends State<CrossDedicatedSheet> {
                     decoration: InputDecoration(
                       border: const OutlineInputBorder(),
                       isDense: true,
-                      labelText: ms.qtyByWidth('0.9'),
+                      labelText: ms.qty,
                     ),
                     child: Text(
                       _crossQty.toStringAsFixed(2),
@@ -278,11 +281,6 @@ class _CrossDedicatedSheetState extends State<CrossDedicatedSheet> {
                   ),
                 ),
               ],
-            ),
-            const SizedBox(height: 6),
-            Text(
-              ms.qtyFormula(_widthM.toStringAsFixed(2)),
-              style: const TextStyle(fontSize: 11, color: AppTheme.steel),
             ),
             const SizedBox(height: 20),
             _section(ms.paste),
@@ -362,29 +360,6 @@ class _CrossDedicatedSheetState extends State<CrossDedicatedSheet> {
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFF8E1),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppTheme.safetyYellow),
-              ),
-              child: Text(
-                '選択中: ${_pateName.isEmpty ? "（未選択）" : _pateName}\n'
-                '①必要量 = ${_area.toStringAsFixed(2)}㎡'
-                ' ÷ ${pate.coverageM2.toStringAsFixed(0)}㎡'
-                ' × ${pate.packKg.toStringAsFixed(0)}kg'
-                ' = ${pate.kgNeeded.toStringAsFixed(2)}kg\n'
-                '②発注 = ceil(${_area.toStringAsFixed(2)}'
-                ' ÷ ${pate.coverageM2.toStringAsFixed(0)})'
-                ' = ${pate.packs.toStringAsFixed(0)} ${pate.packUnit}'
-                '（${pate.orderKg.toStringAsFixed(0)}kg分を発注）\n'
-                '${CrossDedicatedCalc.resolveSpec(_pateName).note}',
-                style: const TextStyle(fontSize: 12, height: 1.35),
-              ),
-            ),
             const SizedBox(height: 20),
             _section(ms.fiberTape),
             SavedNamePicker(
@@ -457,12 +432,6 @@ class _CrossDedicatedSheetState extends State<CrossDedicatedSheet> {
                   ),
                 ),
               ],
-            ),
-            const SizedBox(height: 6),
-            Text(
-              '数量 = ceil(面積 ${_area.toStringAsFixed(2)}㎡ × 0.9m'
-              ' ÷ ${_resolvedTapeLen > 0 ? _resolvedTapeLen.toStringAsFixed(_resolvedTapeLen == _resolvedTapeLen.roundToDouble() ? 0 : 1) : "—"}m)',
-              style: const TextStyle(fontSize: 11, color: AppTheme.steel),
             ),
             const SizedBox(height: 24),
             ElevatedButton(

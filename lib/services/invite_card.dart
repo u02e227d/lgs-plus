@@ -76,7 +76,7 @@ class InviteCard {
       canvas,
       extraText?.trim().isNotEmpty == true
           ? extraText!.trim()
-          : 'アプリの新規登録でこのコードを入力してください。\n双方に1週間の無料特典が付きます。',
+          : 'アプリの新規登録でこのコードを入力してください。\n登録した方に当月アップロード+2枚（最大3枚）。',
       const Offset(360, 830),
       const TextStyle(
         color: AppTheme.navy,

@@ -81,7 +81,10 @@
       debugServiceExtension = "internal"
       enableGPUValidationMode = "1"
       allowLocationSimulation = "YES">
-      <BuildableProductRunnable
+      <StoreKitConfigurationFileReference
+         identifier = "Runner/LGSPlus.storekit">
+      </StoreKitConfigurationFileReference>
+      <BuildableProductRunnable>
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
@@ -98,6 +101,9 @@
       savedToolIdentifier = ""
       useCustomWorkingDirectory = "NO"
       debugDocumentVersioning = "YES">
+      <StoreKitConfigurationFileReference
+         identifier = "Runner/LGSPlus.storekit">
+      </StoreKitConfigurationFileReference>
       <BuildableProductRunnable
          runnableDebuggingMode = "0">
          <BuildableReference

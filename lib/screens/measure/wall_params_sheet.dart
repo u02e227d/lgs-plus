@@ -401,8 +401,11 @@ class _WallParamsSheetState extends State<WallParamsSheet> {
       boardSizeB = _sizesB.first;
     }
 
-    detectedThickness =
-        m.studWidthMm + _boardTotalA + (m.bothSides ? _boardTotalB : 0);
+    detectedThickness = _finishedWallThicknessMm(
+      runnerWidthMm: m.runnerWidthMm > 0 ? m.runnerWidthMm : m.studWidthMm,
+      boardA: _boardTotalA,
+      boardB: m.bothSides ? _boardTotalB : 0,
+    );
 
     final extras = BoardSpecParse.namedExtras(_seedLgsCore);
     _syncSummary = [
@@ -580,15 +583,13 @@ class _WallParamsSheetState extends State<WallParamsSheet> {
                 Text(
                   _ironMeasureMm > 0
                       ? '数量 ${_ironPlateSheetCount()} 枚'
-                          '（総長×$ironPlateSegments段'
-                          '÷定尺 ${(ironPlateLengthMm / 1000).toStringAsFixed(2)}m）'
                       : '数量 —',
                   style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w800,
                     color: AppTheme.navy,
                   ),
-                  ),
+                ),
               ],
             ),
           ),
@@ -793,8 +794,8 @@ class _WallParamsSheetState extends State<WallParamsSheet> {
             padding: const EdgeInsets.only(bottom: 6),
             child: Text(
               widget.anglePieceCount > 0
-                  ? '数量 ${widget.anglePieceCount} 個（開口図形の線×2）'
-                  : '数量 —（開口図形がありません）',
+                  ? '数量 ${widget.anglePieceCount} 個'
+                  : '数量 —',
               style: const TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w800,
@@ -874,11 +875,6 @@ class _WallParamsSheetState extends State<WallParamsSheet> {
               },
             ),
           ],
-          const SizedBox(height: 4),
-          Text(
-            Ms.of(context).angleHint,
-            style: const TextStyle(fontSize: 11, color: AppTheme.steel),
-          ),
         ],
       ],
     );
@@ -1019,12 +1015,25 @@ class _WallParamsSheetState extends State<WallParamsSheet> {
   }
 
   void _syncBoardOffsets() {
-    final stud = profile == StudProfile.square
-        ? squareStud.studWidthMm
-        : form.studWidthMm;
-    detectedThickness = stud +
-        (useBoardFaceA ? _boardTotalA : 0) +
-        (useBoardFaceB && sides == WallSides.both ? _boardTotalB : 0);
+    detectedThickness = _finishedWallThicknessMm(
+      runnerWidthMm: runnerWidthMm > 0
+          ? runnerWidthMm
+          : (profile == StudProfile.square
+              ? squareStud.studWidthMm
+              : form.studWidthMm),
+      boardA: useBoardFaceA ? _boardTotalA : 0,
+      boardB: useBoardFaceB && sides == WallSides.both ? _boardTotalB : 0,
+    );
+  }
+
+  /// 仕上壁厚 = ランナー幅 + ボード（面A/B）。スタッド幅ではない。
+  static double _finishedWallThicknessMm({
+    required double runnerWidthMm,
+    required double boardA,
+    required double boardB,
+  }) {
+    final runner = runnerWidthMm > 0 ? runnerWidthMm : 0.0;
+    return runner + boardA + boardB;
   }
 
   @override
@@ -1633,12 +1642,16 @@ class _WallParamsSheetState extends State<WallParamsSheet> {
   @override
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
-    final studW = profile == StudProfile.square
-        ? squareStud.studWidthMm
-        : form.studWidthMm;
-    final finishedCalc = studW +
-        (useBoardFaceA ? _boardTotalA : 0) +
-        (useBoardFaceB && sides == WallSides.both ? _boardTotalB : 0);
+    final runnerW = runnerWidthMm > 0
+        ? runnerWidthMm
+        : (profile == StudProfile.square
+            ? squareStud.studWidthMm
+            : form.studWidthMm);
+    final finishedCalc = _finishedWallThicknessMm(
+      runnerWidthMm: runnerW,
+      boardA: useBoardFaceA ? _boardTotalA : 0,
+      boardB: useBoardFaceB && sides == WallSides.both ? _boardTotalB : 0,
+    );
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -1698,7 +1711,6 @@ class _WallParamsSheetState extends State<WallParamsSheet> {
                 decoration: InputDecoration(
                   labelText: Ms.of(context).wallHeight,
                   hintText: '2700',
-                  helperText: Ms.of(context).wallHeightHelper,
                 ),
               ),
               ],
@@ -1724,8 +1736,6 @@ class _WallParamsSheetState extends State<WallParamsSheet> {
                           (widget.measuredLengthMm! / 1000).toStringAsFixed(3),
                         ),
                       ),
-                      if (widget.measuredCornerCount > 0)
-                        Text(Ms.of(context).corners(widget.measuredCornerCount)),
                       if (detectedThickness != null)
                         Text(
                           Ms.of(context).wallThick(
@@ -2032,14 +2042,6 @@ class _WallParamsSheetState extends State<WallParamsSheet> {
                       ],
                     ),
                   ),
-                  if (_needsRunnerSpacer)
-                    const Padding(
-                      padding: EdgeInsets.only(bottom: 6),
-                      child: Text(
-                        'スタッド幅 ＜ ランナー幅のため自動選択（スタッド本数×2）',
-                        style: TextStyle(fontSize: 11, color: AppTheme.steel),
-                      ),
-                    ),
                   _scrollPickBar<double>(
                     label: Ms.of(context).runnerSpacerType,
                     items: _spacerMms,
@@ -2144,7 +2146,7 @@ class _WallParamsSheetState extends State<WallParamsSheet> {
               Text(
                 Ms.of(context).finishWallThick(
                   finishedCalc.toStringAsFixed(0),
-                  studW.toStringAsFixed(0),
+                  runnerW.toStringAsFixed(0),
                   useBoardFaceA || useBoardFaceB,
                 ),
                 style: const TextStyle(fontSize: 12, color: AppTheme.steel),
@@ -2153,10 +2155,6 @@ class _WallParamsSheetState extends State<WallParamsSheet> {
                 value: useRockFelt,
                 onChanged: (v) => setState(() => useRockFelt = v ?? false),
                 title: Text(Ms.of(context).rockFelt),
-                subtitle: Text(
-                  Ms.of(context).rockFeltAuto,
-                  style: const TextStyle(fontSize: 11),
-                ),
                 controlAffinity: ListTileControlAffinity.leading,
                 contentPadding: EdgeInsets.zero,
               ),

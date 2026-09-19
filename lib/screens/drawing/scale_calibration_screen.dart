@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -9,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../l10n/locale_controller.dart';
 import '../../models/models.dart';
 import '../../providers/app_state.dart';
+import '../../services/app_platform.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/keyboard_done.dart';
 
@@ -51,6 +53,21 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
   int? _activePointer;
   bool _dragging = false;
 
+  // Mac：クリック縮小／ダブルクリック拡大／ドラッグ移動
+  static bool get _isMac => AppPlatform.usesDesktopPointer;
+  Offset? _macDownPos;
+  Offset? _macDownGlobal;
+  Matrix4? _macDownMatrix;
+  DateTime? _macLastTapAt;
+  Offset? _macLastTapPos;
+  bool _macPanning = false;
+  bool _macOnCrosshair = false;
+  Timer? _macTapZoomTimer;
+  static const _macClickSlop = 6.0;
+  static const _macDoubleTapMs = 350;
+  static const _macZoomIn = 1.35;
+  static const _macZoomOut = 1 / 1.35;
+
   static const double _crosshairSize = 144;
   static const double _fingerSize = 54;
 
@@ -63,6 +80,7 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
 
   @override
   void dispose() {
+    _macTapZoomTimer?.cancel();
     _transform.removeListener(_onTransformChanged);
     _transform.dispose();
     _mmCtrl.dispose();
@@ -174,7 +192,10 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
     _activePointer = null;
 
     final contentPt = _viewportToContent(_crosshairViewport);
+    await _confirmAimPoint(contentPt);
+  }
 
+  Future<void> _confirmAimPoint(Offset contentPt) async {
     if (_phase == _ScalePhase.aimStart) {
       setState(() {
         _startContent = contentPt;
@@ -201,6 +222,138 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
       setState(() => _endContent = contentPt);
       await _promptAndSave();
     }
+  }
+
+  bool _hitCrosshair(Offset viewportLocal) {
+    if (!_crosshairReady) return false;
+    final d = (viewportLocal - _crosshairViewport).distance;
+    return d <= _crosshairSize / 2;
+  }
+
+  void _zoomAtViewport(Offset focalViewport, double factor) {
+    final current = _transform.value;
+    final scale = current.getMaxScaleOnAxis();
+    if (scale <= 0) return;
+    final nextScale = (scale * factor).clamp(0.05, 20.0);
+    final ratio = nextScale / scale;
+    if ((ratio - 1).abs() < 1e-6) return;
+
+    final sceneFocal = _viewportToContent(focalViewport);
+    final matrix = Matrix4.identity()
+      ..translateByDouble(focalViewport.dx, focalViewport.dy, 0, 1)
+      ..scaleByDouble(ratio, ratio, 1, 1)
+      ..translateByDouble(-focalViewport.dx, -focalViewport.dy, 0, 1)
+      ..multiply(current);
+
+    // 焦点がずれないよう微調整
+    final after = MatrixUtils.transformPoint(matrix, sceneFocal);
+    matrix.translateByDouble(
+      focalViewport.dx - after.dx,
+      focalViewport.dy - after.dy,
+      0,
+      1,
+    );
+    _transform.value = matrix;
+  }
+
+  void _macPointerDown(PointerDownEvent e) {
+    final box = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    final local = box.globalToLocal(e.position);
+    _macDownPos = local;
+    _macDownGlobal = e.position;
+    _macDownMatrix = Matrix4.copy(_transform.value);
+    _macPanning = false;
+    _macOnCrosshair = _hitCrosshair(local);
+    _activePointer = e.pointer;
+
+    if (_macOnCrosshair && _crosshairReady) {
+      _dragging = true;
+      _dragStartCrosshair = _crosshairViewport;
+      _dragStartGlobal = e.position;
+    }
+  }
+
+  void _macPointerMove(PointerMoveEvent e) {
+    if (e.pointer != _activePointer || _macDownPos == null) return;
+    final box = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    final local = box.globalToLocal(e.position);
+    final delta = local - _macDownPos!;
+
+    if (_macOnCrosshair && _dragging) {
+      final next = _dragStartCrosshair + (e.position - _macDownGlobal!);
+      setState(() => _crosshairViewport = next);
+      return;
+    }
+
+    if (delta.distance > _macClickSlop) {
+      _macTapZoomTimer?.cancel();
+      _macTapZoomTimer = null;
+      _macLastTapAt = null;
+      _macLastTapPos = null;
+      _macPanning = true;
+      final m = Matrix4.copy(_macDownMatrix!);
+      m.translateByDouble(delta.dx, delta.dy, 0, 1);
+      _transform.value = m;
+    }
+  }
+
+  Future<void> _macPointerUp(PointerEvent e) async {
+    if (e.pointer != _activePointer) return;
+    final box = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
+    final local = box?.globalToLocal(e.position) ?? _macDownPos;
+    final wasOnCrosshair = _macOnCrosshair;
+    final wasPanning = _macPanning;
+    final downPos = _macDownPos;
+
+    _dragging = false;
+    _activePointer = null;
+    _macOnCrosshair = false;
+    _macPanning = false;
+    _macDownPos = null;
+    _macDownGlobal = null;
+    _macDownMatrix = null;
+
+    if (local == null || downPos == null) return;
+
+    if (wasOnCrosshair && _crosshairReady) {
+      await _confirmAimPoint(_viewportToContent(_crosshairViewport));
+      return;
+    }
+
+    if (wasPanning) return;
+
+    final now = DateTime.now();
+    final isDouble = _macLastTapAt != null &&
+        now.difference(_macLastTapAt!) <
+            const Duration(milliseconds: _macDoubleTapMs) &&
+        _macLastTapPos != null &&
+        (local - _macLastTapPos!).distance < 28;
+
+    if (isDouble) {
+      _macTapZoomTimer?.cancel();
+      _macTapZoomTimer = null;
+      _macLastTapAt = null;
+      _macLastTapPos = null;
+      _zoomAtViewport(local, _macZoomIn);
+      return;
+    }
+
+    _macLastTapAt = now;
+    _macLastTapPos = local;
+    _macTapZoomTimer?.cancel();
+    _macTapZoomTimer = Timer(
+      const Duration(milliseconds: _macDoubleTapMs),
+      () {
+        if (!mounted) return;
+        final focal = _macLastTapPos;
+        _macLastTapAt = null;
+        _macLastTapPos = null;
+        _macTapZoomTimer = null;
+        if (focal != null) _zoomAtViewport(focal, _macZoomOut);
+      },
+    );
   }
 
   Future<void> _promptAndSave() async {
@@ -310,6 +463,7 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
       _ScalePhase.aimStart => s.scaleHintAimStart,
       _ScalePhase.aimEnd => s.scaleHintAimEnd,
     };
+    final navHint = _isMac ? s.scaleHintMacNav : null;
 
     return Scaffold(
       appBar: AppBar(
@@ -331,9 +485,27 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
             child: Row(
               children: [
                 Expanded(
-                  child: Text(
-                    phaseHint,
-                    style: const TextStyle(fontSize: 13, color: AppTheme.steel),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        phaseHint,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: AppTheme.steel,
+                        ),
+                      ),
+                      if (navHint != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          navHint,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.steel,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -385,98 +557,118 @@ class _ScaleCalibrationScreenState extends State<ScaleCalibrationScreen> {
                 ? const Center(child: CircularProgressIndicator())
                 : LayoutBuilder(
                     builder: (context, constraints) {
-                      return Stack(
-                        key: _viewportKey,
-                        fit: StackFit.expand,
-                        children: [
-                          // 図面：測定キャンバスと同じく画像ピクセル＝座標系
-                          InteractiveViewer(
-                            transformationController: _transform,
-                            constrained: false,
-                            boundaryMargin:
-                                const EdgeInsets.all(double.infinity),
-                            minScale: 0.05,
-                            maxScale: 20,
-                            child: SizedBox(
-                              width: _imageSize.width,
-                              height: _imageSize.height,
-                              child: RawImage(
-                                image: _bgImage,
+                      return Listener(
+                        behavior: HitTestBehavior.opaque,
+                        onPointerDown: _isMac ? _macPointerDown : null,
+                        onPointerMove: _isMac ? _macPointerMove : null,
+                        onPointerUp: _isMac ? _macPointerUp : null,
+                        onPointerCancel: _isMac ? _macPointerUp : null,
+                        child: Stack(
+                          key: _viewportKey,
+                          fit: StackFit.expand,
+                          children: [
+                            // 図面：測定キャンバスと同じく画像ピクセル＝座標系
+                            InteractiveViewer(
+                              transformationController: _transform,
+                              constrained: false,
+                              boundaryMargin:
+                                  const EdgeInsets.all(double.infinity),
+                              minScale: 0.05,
+                              maxScale: 20,
+                              // Mac は自前でクリック拡大縮小・ドラッグ移動
+                              panEnabled: !_isMac,
+                              scaleEnabled: !_isMac,
+                              child: SizedBox(
                                 width: _imageSize.width,
                                 height: _imageSize.height,
-                                fit: BoxFit.fill,
-                              ),
-                            ),
-                          ),
-
-                          // 測定線・始点マーク（ビューポート座標・サイズ固定）
-                          if (_startViewport != null)
-                            Positioned.fill(
-                              child: IgnorePointer(
-                                child: CustomPaint(
-                                  painter: _ScaleOverlayPainter(
-                                    start: _startViewport!,
-                                    end: _phase == _ScalePhase.aimEnd
-                                        ? _crosshairViewport
-                                        : _endViewport,
-                                  ),
+                                child: RawImage(
+                                  image: _bgImage,
+                                  width: _imageSize.width,
+                                  height: _imageSize.height,
+                                  fit: BoxFit.fill,
                                 ),
                               ),
                             ),
 
-                          // 狙撃十字（画面固定サイズ）
-                          if (_crosshairReady)
-                            Positioned(
-                              left: _crosshairViewport.dx - _crosshairSize / 2,
-                              top: _crosshairViewport.dy - _crosshairSize / 2,
-                              child: Listener(
-                                behavior: HitTestBehavior.opaque,
-                                onPointerDown: _onPointerDown,
-                                onPointerMove: _onPointerMove,
-                                onPointerUp: _onPointerUp,
-                                onPointerCancel: _onPointerUp,
-                                child: SizedBox(
-                                  width: _crosshairSize,
-                                  height: _crosshairSize,
-                                  child: Stack(
-                                    alignment: Alignment.center,
-                                    children: [
-                                      Image.asset(
-                                        'assets/drawable/measure_crosshair2x.png',
-                                        width: _crosshairSize,
-                                        height: _crosshairSize,
-                                        fit: BoxFit.contain,
-                                      ),
-                                      Container(
-                                        width: 22,
-                                        height: 22,
-                                        decoration: BoxDecoration(
-                                          shape: BoxShape.circle,
-                                          color: Colors.white.withValues(
-                                            alpha: 0.15,
-                                          ),
-                                          border: Border.all(
-                                            color: const Color(0x99E53935),
-                                            width: 1.5,
-                                          ),
-                                        ),
-                                      ),
-                                      Image.asset(
-                                        'assets/drawable/shouzhi2x.png',
-                                        width: _fingerSize,
-                                        height: _fingerSize,
-                                        fit: BoxFit.contain,
-                                      ),
-                                    ],
+                            // 測定線・始点マーク（ビューポート座標・サイズ固定）
+                            if (_startViewport != null)
+                              Positioned.fill(
+                                child: IgnorePointer(
+                                  child: CustomPaint(
+                                    painter: _ScaleOverlayPainter(
+                                      start: _startViewport!,
+                                      end: _phase == _ScalePhase.aimEnd
+                                          ? _crosshairViewport
+                                          : _endViewport,
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                        ],
+
+                            // 狙撃十字（画面固定サイズ）
+                            if (_crosshairReady)
+                              Positioned(
+                                left:
+                                    _crosshairViewport.dx - _crosshairSize / 2,
+                                top:
+                                    _crosshairViewport.dy - _crosshairSize / 2,
+                                child: _isMac
+                                    ? IgnorePointer(
+                                        child: _crosshairVisual(),
+                                      )
+                                    : Listener(
+                                        behavior: HitTestBehavior.opaque,
+                                        onPointerDown: _onPointerDown,
+                                        onPointerMove: _onPointerMove,
+                                        onPointerUp: _onPointerUp,
+                                        onPointerCancel: _onPointerUp,
+                                        child: _crosshairVisual(),
+                                      ),
+                              ),
+                          ],
+                        ),
                       );
                     },
                   ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _crosshairVisual() {
+    return SizedBox(
+      width: _crosshairSize,
+      height: _crosshairSize,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Image.asset(
+            'assets/drawable/measure_crosshair2x.png',
+            width: _crosshairSize,
+            height: _crosshairSize,
+            fit: BoxFit.contain,
+          ),
+          Container(
+            width: 22,
+            height: 22,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white.withValues(alpha: 0.15),
+              border: Border.all(
+                color: const Color(0x99E53935),
+                width: 1.5,
+              ),
+            ),
+          ),
+          // Mac は実マウスを使うため指アイコンは出さない
+          if (!_isMac)
+            Image.asset(
+              'assets/drawable/shouzhi2x.png',
+              width: _fingerSize,
+              height: _fingerSize,
+              fit: BoxFit.contain,
+            ),
         ],
       ),
     );

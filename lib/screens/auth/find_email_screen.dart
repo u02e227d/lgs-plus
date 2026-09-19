@@ -4,17 +4,11 @@ import 'package:provider/provider.dart';
 import '../../l10n/locale_controller.dart';
 import '../../providers/app_state.dart';
 import '../../theme/app_theme.dart';
-import 'reset_link_flow.dart';
+import 'forgot_password_screen.dart';
 
-enum FindAccountPurpose { findEmail, resetBySms }
-
+/// 電話番号＋氏名で登録メールを探す（SMS は使わない）
 class FindEmailScreen extends StatefulWidget {
-  const FindEmailScreen({
-    super.key,
-    this.purpose = FindAccountPurpose.findEmail,
-  });
-
-  final FindAccountPurpose purpose;
+  const FindEmailScreen({super.key});
 
   @override
   State<FindEmailScreen> createState() => _FindEmailScreenState();
@@ -62,14 +56,33 @@ class _FindEmailScreenState extends State<FindEmailScreen> {
             name: '${_family.text.trim()} ${_given.text.trim()}',
           );
       if (!mounted) return;
-      final extra = widget.purpose == FindAccountPurpose.findEmail
-          ? S.of(context).foundEmail(user.email)
-          : null;
-      await showResetLinkSentAndOpen(
+      final s = S.of(context);
+      final action = await showDialog<_FoundEmailAction>(
         context: context,
-        user: user,
-        channel: PasswordResetChannel.sms,
-        extraMessage: extra,
+        builder: (ctx) => AlertDialog(
+          title: Text(s.findEmailTitle),
+          content: Text(s.foundEmail(user.email)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, _FoundEmailAction.login),
+              child: Text(s.useEmailToLogin),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, _FoundEmailAction.reset),
+              child: Text(s.resetPasswordWithEmail),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || action == null) return;
+      if (action == _FoundEmailAction.login) {
+        Navigator.of(context).pop(user.email);
+        return;
+      }
+      await Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => ForgotPasswordScreen(initialEmail: user.email),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -84,13 +97,7 @@ class _FindEmailScreenState extends State<FindEmailScreen> {
     final s = S.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          _askName
-              ? s.confirmNameTitle
-              : (widget.purpose == FindAccountPurpose.findEmail
-                  ? s.findEmailTitle
-                  : s.resetBySms),
-        ),
+        title: Text(_askName ? s.confirmNameTitle : s.findEmailTitle),
         leading: BackButton(
           onPressed: () {
             if (_askName) {
@@ -114,7 +121,7 @@ class _FindEmailScreenState extends State<FindEmailScreen> {
               borderRadius: BorderRadius.circular(10),
             ),
             child: Text(
-              _askName ? s.enterFamilyGivenHint : s.enterRegisteredPhone,
+              _askName ? s.enterFamilyGivenHint : s.findEmailIntro,
             ),
           ),
           const SizedBox(height: 16),
@@ -164,9 +171,7 @@ class _FindEmailScreenState extends State<FindEmailScreen> {
           ],
           const SizedBox(height: 20),
           ElevatedButton(
-            onPressed: _busy
-                ? null
-                : (_askName ? _lookup : _goToName),
+            onPressed: _busy ? null : (_askName ? _lookup : _goToName),
             child: _busy
                 ? const SizedBox(
                     width: 18,
@@ -183,3 +188,5 @@ class _FindEmailScreenState extends State<FindEmailScreen> {
     );
   }
 }
+
+enum _FoundEmailAction { login, reset }

@@ -303,7 +303,7 @@ class LgsMethodPreset {
     this.useCross = false,
   });
 
-  /// 仕上がり壁厚概算 = スタッド幅 + ボード×層×面
+  /// 仕上がり壁厚概算 = ランナー幅 + ボード×層×面
   double get finishedThicknessMm {
     final board = boardThickness.mm *
         layers.count *

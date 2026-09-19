@@ -53,29 +53,33 @@ class _KeyboardDoneScopeState extends State<KeyboardDoneScope> {
 
   @override
   Widget build(BuildContext context) {
-    final inset = MediaQuery.viewInsetsOf(context).bottom;
-    final open = _editing || inset > 0;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    // バーを Column で出して ListView 高さが変わると、iOS の端バウンドが止まらなくなる
+    final open = _editing;
+    return Stack(
       children: [
-        Expanded(child: widget.child),
+        widget.child,
         if (open)
-          Material(
-            elevation: 6,
-            color: const Color(0xFFEEF1F5),
-            child: SafeArea(
-              top: false,
-              child: SizedBox(
-                height: 44,
-                child: Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: KeyboardDoneScope.dismiss,
-                    child: Text(
-                      S.of(context).done,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w800,
-                        color: AppTheme.navy,
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: Material(
+              elevation: 6,
+              color: const Color(0xFFEEF1F5),
+              child: SafeArea(
+                top: false,
+                child: SizedBox(
+                  height: 44,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: KeyboardDoneScope.dismiss,
+                      child: Text(
+                        S.of(context).done,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          color: AppTheme.navy,
+                        ),
                       ),
                     ),
                   ),

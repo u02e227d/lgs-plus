@@ -3,7 +3,9 @@ import 'package:provider/provider.dart';
 
 import '../../l10n/locale_controller.dart';
 import '../../providers/app_state.dart';
+import '../../services/device_session.dart';
 import '../../theme/app_theme.dart';
+import 'verify_email_screen.dart';
 
 class ActivateScreen extends StatefulWidget {
   const ActivateScreen({
@@ -52,18 +54,78 @@ class _ActivateScreenState extends State<ActivateScreen> {
       final user = await state.auth.activateWithPassword(
         email: _email.text,
         password: _password.text,
+        isPasswordReset: widget.isPasswordReset,
       );
       await state.setUser(user);
       if (!mounted) return;
       Navigator.of(context).popUntil((r) => r.isFirst);
-    } catch (e) {
+    } on DeviceSwitchCooldownException {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+        SnackBar(content: Text(S.of(context).deviceSwitchCooldown)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      final msg = e.toString().replaceFirst('Exception: ', '');
+      final s = S.of(context);
+      final needVerify = msg.contains('email_not_verified') ||
+          msg == s.emailNotVerified ||
+          msg.contains('请先完成邮箱') ||
+          msg.contains('メール認証');
+      if (needVerify) {
+        final go = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Text(s.emailNotVerified),
+            content: Text(s.emailVerifyRequiredBody),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(s.cancel),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(s.gotoEmailVerify),
+              ),
+            ],
+          ),
+        );
+        if (go == true && mounted) {
+          await _openVerify();
+        }
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg)),
       );
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _openVerify() async {
+    final email = _email.text.trim();
+    if (email.isEmpty) return;
+    final auth = context.read<AppState>().auth;
+    var isReset = widget.isPasswordReset;
+    try {
+      final purpose = await auth.resendEmailCode(
+        email: email,
+        passwordReset: widget.isPasswordReset,
+      );
+      isReset = purpose == 'reset';
+    } catch (_) {
+      // 再送に失敗しても認証画面へ（既に届いている場合がある）
+    }
+    if (!mounted) return;
+    await Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => VerifyEmailScreen(
+          email: email,
+          isPasswordReset: isReset,
+        ),
+      ),
+    );
   }
 
   @override
@@ -128,6 +190,11 @@ class _ActivateScreenState extends State<ActivateScreen> {
                 : Text(widget.isPasswordReset
                     ? s.resetPasswordAction
                     : s.setPasswordActivate),
+          ),
+          const SizedBox(height: 8),
+          TextButton(
+            onPressed: _busy ? null : _openVerify,
+            child: Text(s.gotoEmailVerify),
           ),
         ],
       ),

@@ -374,114 +374,120 @@ class _WallMaterialSheetState extends State<WallMaterialSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final topInset = MediaQuery.viewPaddingOf(context).top;
     return KeyboardDoneScope(
-      child: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 12),
-                  decoration: BoxDecoration(
-                    color: Colors.black26,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      Ms.of(context).basicSettings,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
-                      ),
+      child: Padding(
+        // 全画面シートでもステータスバー（電波・電池）と被らないように下げる
+        padding: EdgeInsets.only(top: topInset + 8),
+        child: SafeArea(
+          top: false,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.black26,
+                      borderRadius: BorderRadius.circular(2),
                     ),
                   ),
-                  _crossDedicatedButton(),
-                ],
-              ),
-              const SizedBox(height: 16),
-              _sectionTitle(Ms.of(context).wallHeightShort),
-              TextField(
-                controller: _height,
-                keyboardType: DoneKeyboard.decimal,
-                inputFormatters: DoneKeyboard.decimalFormatters,
-                textInputAction: DoneKeyboard.action,
-                onSubmitted: DoneKeyboard.onSubmitted,
-                decoration: InputDecoration(
-                  labelText: Ms.of(context).heightMm,
-                  hintText: '2700',
-                  suffixText: 'mm',
-                  border: OutlineInputBorder(),
-                  isDense: true,
                 ),
-                onChanged: (_) => setState(() {}),
-              ),
-              const SizedBox(height: 8),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _sectionTitle(Ms.of(context).faceB),
-                  _thicknessRow(
-                    layers: _boardB,
-                    onChanged: (v) => setState(() => _boardB = v),
-                  ),
-                  const SizedBox(height: 16),
-                  _sectionTitle('LGS'),
-                  LockableCupertinoPicker(
-                    label: Ms.of(context).runnerW,
-                    labels: [for (final mm in lgsMms) _mmLabel(mm)],
-                    selectedIndex:
-                        lgsMms.indexOf(_runner).clamp(0, lgsMms.length - 1),
-                    onSelected: (i) => setState(() => _runner = lgsMms[i]),
-                  ),
-                  const SizedBox(height: 8),
-                  LockableCupertinoPicker(
-                    label: Ms.of(context).squareStud,
-                    labels: [for (final mm in lgsMms) _mmLabel(mm)],
-                    selectedIndex:
-                        lgsMms.indexOf(_stud).clamp(0, lgsMms.length - 1),
-                    onSelected: (i) => setState(() => _stud = lgsMms[i]),
-                  ),
-                  const SizedBox(height: 16),
-                  _sectionTitle(Ms.of(context).faceA),
-                  _thicknessRow(
-                    layers: _boardA,
-                    onChanged: (v) => setState(() => _boardA = v),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: !_ready
-                    ? null
-                    : () {
-                        final r = _result(WallMaterialAction.methodSelect);
-                        if (r != null) Navigator.pop(context, r);
-                      },
-                child: Text(Ms.of(context).goMaterialPage),
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton(
-                onPressed: _confirmDeleteLine,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.danger,
-                  side: const BorderSide(color: AppTheme.danger),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        Ms.of(context).basicSettings,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    _crossDedicatedButton(),
+                  ],
                 ),
-                child: Text(Ms.of(context).deleteThisLine),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: Text(S.of(context).cancel,
-                    style: const TextStyle(color: AppTheme.steel)),
-              ),
-            ],
+                const SizedBox(height: 16),
+                _sectionTitle(Ms.of(context).wallHeightShort),
+                TextField(
+                  controller: _height,
+                  keyboardType: DoneKeyboard.decimal,
+                  inputFormatters: DoneKeyboard.decimalFormatters,
+                  textInputAction: DoneKeyboard.action,
+                  onSubmitted: DoneKeyboard.onSubmitted,
+                  decoration: InputDecoration(
+                    labelText: Ms.of(context).heightMm,
+                    hintText: '2700',
+                    suffixText: 'mm',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: 8),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _sectionTitle(Ms.of(context).faceB),
+                    _thicknessRow(
+                      layers: _boardB,
+                      onChanged: (v) => setState(() => _boardB = v),
+                    ),
+                    const SizedBox(height: 16),
+                    _sectionTitle('LGS'),
+                    LockableCupertinoPicker(
+                      label: Ms.of(context).runnerW,
+                      labels: [for (final mm in lgsMms) _mmLabel(mm)],
+                      selectedIndex:
+                          lgsMms.indexOf(_runner).clamp(0, lgsMms.length - 1),
+                      onSelected: (i) => setState(() => _runner = lgsMms[i]),
+                    ),
+                    const SizedBox(height: 8),
+                    LockableCupertinoPicker(
+                      label: Ms.of(context).studW,
+                      labels: [for (final mm in lgsMms) _mmLabel(mm)],
+                      selectedIndex:
+                          lgsMms.indexOf(_stud).clamp(0, lgsMms.length - 1),
+                      onSelected: (i) => setState(() => _stud = lgsMms[i]),
+                    ),
+                    const SizedBox(height: 16),
+                    _sectionTitle(Ms.of(context).faceA),
+                    _thicknessRow(
+                      layers: _boardA,
+                      onChanged: (v) => setState(() => _boardA = v),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: !_ready
+                      ? null
+                      : () {
+                          final r = _result(WallMaterialAction.methodSelect);
+                          if (r != null) Navigator.pop(context, r);
+                        },
+                  child: Text(Ms.of(context).goMaterialPage),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton(
+                  onPressed: _confirmDeleteLine,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.danger,
+                    side: const BorderSide(color: AppTheme.danger),
+                  ),
+                  child: Text(Ms.of(context).deleteThisLine),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text(S.of(context).cancel,
+                      style: const TextStyle(color: AppTheme.steel)),
+                ),
+              ],
+            ),
           ),
         ),
       ),

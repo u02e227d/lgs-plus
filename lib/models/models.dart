@@ -12,6 +12,19 @@ bool _jsonBool(dynamic v, {bool fallback = false}) {
   return fallback;
 }
 
+/// MySQL / PHP JSON は数値を文字列で返すことがある。
+int? _jsonInt(dynamic v) {
+  if (v == null) return null;
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  if (v is String) {
+    final t = v.trim();
+    if (t.isEmpty) return null;
+    return int.tryParse(t) ?? double.tryParse(t)?.toInt();
+  }
+  return null;
+}
+
 enum SubscriptionPlan { free, paid }
 
 /// 会社・ユーザー（ローカル登録。本番はメール活性化）
@@ -22,6 +35,8 @@ class AppUser {
   final String contactName;
   final String phone;
   final String email;
+  /// サーバー上の端末区分：`ios` / `mac` / `windows`
+  final String clientApp;
   final String? passwordHash;
   final bool activated;
   final DateTime createdAt;
@@ -30,6 +45,15 @@ class AppUser {
   final SubscriptionPlan plan;
   final DateTime accessUntil;
   final String? pendingNotice;
+  final int seatLimit;
+  final String? productId;
+  /// 所属組織のオーナー user id（席位メンバー判定用）
+  final String? orgOwnerUserId;
+  final bool uploadUnlimited;
+  final int uploadRemaining;
+  final int uploadLimit;
+  final int uploadUsed;
+  final int uploadBonus;
 
   AppUser({
     required this.id,
@@ -38,6 +62,7 @@ class AppUser {
     required this.contactName,
     required this.phone,
     required this.email,
+    this.clientApp = 'ios',
     this.passwordHash,
     this.activated = false,
     DateTime? createdAt,
@@ -46,14 +71,27 @@ class AppUser {
     this.plan = SubscriptionPlan.free,
     DateTime? accessUntil,
     this.pendingNotice,
+    this.seatLimit = 0,
+    this.productId,
+    this.orgOwnerUserId,
+    this.uploadUnlimited = false,
+    this.uploadRemaining = 1,
+    this.uploadLimit = 1,
+    this.uploadUsed = 0,
+    this.uploadBonus = 0,
   })  : createdAt = createdAt ?? DateTime.now(),
         accessUntil = accessUntil ?? (createdAt ?? DateTime.now());
 
   bool get isPaid => plan == SubscriptionPlan.paid;
 
-  /// 有料、または招待特典などの利用期限内は全機能
-  bool hasFullAccess([DateTime? now]) =>
-      isPaid || remainingDays(now) > 0;
+  /// 席位オーナー（購入者）。org 未設定時は自分がオーナー扱い。
+  bool get isOrgOwner =>
+      orgOwnerUserId == null || orgOwnerUserId!.isEmpty || orgOwnerUserId == id;
+
+  /// 全機能は常時利用可（制限は図面アップロード回数）
+  bool hasFullAccess([DateTime? now]) => activated;
+
+  bool get canUploadDrawing => uploadUnlimited || uploadRemaining > 0;
 
   int remainingDays([DateTime? now]) {
     final n = now ?? DateTime.now();
@@ -64,6 +102,8 @@ class AppUser {
   }
 
   AppUser copyWith({
+    String? email,
+    String? clientApp,
     String? passwordHash,
     bool? activated,
     String? inviteCode,
@@ -72,6 +112,16 @@ class AppUser {
     DateTime? accessUntil,
     String? pendingNotice,
     bool clearNotice = false,
+    int? seatLimit,
+    String? productId,
+    String? orgOwnerUserId,
+    bool clearOrgOwner = false,
+    bool clearProductId = false,
+    bool? uploadUnlimited,
+    int? uploadRemaining,
+    int? uploadLimit,
+    int? uploadUsed,
+    int? uploadBonus,
   }) =>
       AppUser(
         id: id,
@@ -79,7 +129,8 @@ class AppUser {
         address: address,
         contactName: contactName,
         phone: phone,
-        email: email,
+        email: email ?? this.email,
+        clientApp: clientApp ?? this.clientApp,
         passwordHash: passwordHash ?? this.passwordHash,
         activated: activated ?? this.activated,
         createdAt: createdAt,
@@ -88,6 +139,15 @@ class AppUser {
         plan: plan ?? this.plan,
         accessUntil: accessUntil ?? this.accessUntil,
         pendingNotice: clearNotice ? null : (pendingNotice ?? this.pendingNotice),
+        seatLimit: seatLimit ?? this.seatLimit,
+        productId: clearProductId ? null : (productId ?? this.productId),
+        orgOwnerUserId:
+            clearOrgOwner ? null : (orgOwnerUserId ?? this.orgOwnerUserId),
+        uploadUnlimited: uploadUnlimited ?? this.uploadUnlimited,
+        uploadRemaining: uploadRemaining ?? this.uploadRemaining,
+        uploadLimit: uploadLimit ?? this.uploadLimit,
+        uploadUsed: uploadUsed ?? this.uploadUsed,
+        uploadBonus: uploadBonus ?? this.uploadBonus,
       );
 
   Map<String, dynamic> toMap() => {
@@ -97,6 +157,7 @@ class AppUser {
         'contact_name': contactName,
         'phone': phone,
         'email': email,
+        'client_app': clientApp,
         'password_hash': passwordHash,
         'activated': activated ? 1 : 0,
         'created_at': createdAt.toIso8601String(),
@@ -105,30 +166,157 @@ class AppUser {
         'plan': plan == SubscriptionPlan.paid ? 'paid' : 'free',
         'access_until': accessUntil.toIso8601String(),
         'pending_notice': pendingNotice,
+        'seat_limit': seatLimit,
+        'product_id': productId,
+        'org_owner_user_id': orgOwnerUserId,
+        'upload_unlimited': uploadUnlimited ? 1 : 0,
+        'upload_remaining': uploadRemaining,
+        'upload_limit': uploadLimit,
+        'upload_used': uploadUsed,
+        'upload_bonus': uploadBonus,
       };
 
   factory AppUser.fromMap(Map<String, dynamic> m) {
     final created = DateTime.parse(m['created_at'] as String);
     final accessRaw = m['access_until'] as String?;
+    final quota = m['upload_quota'];
+    final org = m['org'];
+    var unlimited = _jsonBool(m['upload_unlimited']);
+    var remaining = _jsonInt(m['upload_remaining']);
+    var limit = _jsonInt(m['upload_limit']);
+    var used = _jsonInt(m['upload_used']);
+    var bonus = _jsonInt(m['upload_bonus']) ?? 0;
+    var seats = _jsonInt(m['seat_limit']) ?? 0;
+    String? product = m['product_id'] as String? ?? m['apple_product_id'] as String?;
+    String? orgOwner = m['org_owner_user_id'] as String?;
+    var plan = (m['plan'] == 'paid') ? SubscriptionPlan.paid : SubscriptionPlan.free;
+    if (quota is Map) {
+      unlimited = _jsonBool(quota['unlimited'], fallback: unlimited);
+      remaining = _jsonInt(quota['remaining']) ?? remaining;
+      limit = _jsonInt(quota['limit']) ?? limit;
+      used = _jsonInt(quota['used']) ?? used;
+      bonus = _jsonInt(quota['bonus']) ?? bonus;
+    }
+    if (org is Map) {
+      seats = _jsonInt(org['seat_limit']) ?? seats;
+      product = (org['product_id'] as String?) ?? product;
+      orgOwner = (org['owner_user_id'] as String?) ?? orgOwner;
+      final status = '${org['status'] ?? 'active'}';
+      if (status == 'active' || status.isEmpty) {
+        plan = SubscriptionPlan.paid;
+        unlimited = true;
+      }
+    }
+    final rawClient = '${m['client_app'] ?? 'ios'}'.trim().toLowerCase();
+    final clientApp =
+        (rawClient == 'mac' || rawClient == 'macos' || rawClient == 'osx')
+            ? 'mac'
+            : (rawClient == 'windows' ||
+                    rawClient == 'win' ||
+                    rawClient == 'win32')
+                ? 'windows'
+                : 'ios';
     return AppUser(
       id: m['id'] as String,
-      companyName: m['company_name'] as String,
-      address: m['address'] as String,
-      contactName: m['contact_name'] as String,
-      phone: m['phone'] as String,
-      email: m['email'] as String,
+      companyName: '${m['company_name'] ?? ''}',
+      address: '${m['address'] ?? ''}',
+      contactName: '${m['contact_name'] ?? ''}',
+      phone: '${m['phone'] ?? ''}',
+      email: '${m['email'] ?? ''}',
+      clientApp: clientApp,
       passwordHash: m['password_hash'] as String?,
-      activated: (m['activated'] as int? ?? 0) == 1,
+      activated: _jsonBool(m['activated']),
       createdAt: created,
-      inviteCode: (m['invite_code'] as String?) ?? '',
+      inviteCode: '${m['invite_code'] ?? ''}',
       referredByCode: m['referred_by_code'] as String?,
-      plan: (m['plan'] as String?) == 'paid'
-          ? SubscriptionPlan.paid
-          : SubscriptionPlan.free,
-      accessUntil: accessRaw == null || accessRaw.isEmpty
-          ? created
-          : DateTime.parse(accessRaw),
+      plan: plan,
+      accessUntil: accessRaw != null && accessRaw.isNotEmpty
+          ? DateTime.tryParse(accessRaw) ?? created
+          : created,
       pendingNotice: m['pending_notice'] as String?,
+      seatLimit: seats,
+      productId: product,
+      orgOwnerUserId: orgOwner,
+      uploadUnlimited: unlimited,
+      uploadRemaining: remaining ?? (unlimited ? -1 : 1),
+      uploadLimit: limit ?? (unlimited ? -1 : 1),
+      uploadUsed: used ?? 0,
+      uploadBonus: bonus,
+    );
+  }
+}
+
+/// 注文書の送信履历（ローカル）
+class OrderHistoryEntry {
+  final String id;
+  final String projectId;
+  final String title;
+  final DateTime issuedAt;
+  final DateTime createdAt;
+  final Map<String, dynamic> meta;
+  final List<EstimateLine> lines;
+
+  OrderHistoryEntry({
+    required this.id,
+    required this.projectId,
+    required this.title,
+    required this.issuedAt,
+    DateTime? createdAt,
+    required this.meta,
+    required this.lines,
+  }) : createdAt = createdAt ?? DateTime.now();
+
+  String get dateLabel {
+    final d = issuedAt;
+    return '${d.year}年${d.month}月${d.day}日';
+  }
+
+  String get subtitle {
+    final site = '${meta['siteName'] ?? ''}'.trim();
+    final no = '${meta['orderNo'] ?? ''}'.trim();
+    if (site.isNotEmpty && no.isNotEmpty) return '$site / No.$no';
+    if (site.isNotEmpty) return site;
+    if (no.isNotEmpty) return 'No.$no';
+    return title;
+  }
+
+  Map<String, dynamic> toMap() => {
+        'id': id,
+        'project_id': projectId,
+        'title': title,
+        'issued_at': issuedAt.toIso8601String(),
+        'created_at': createdAt.toIso8601String(),
+        'meta_json': jsonEncode(meta),
+        'lines_json': jsonEncode([for (final e in lines) e.toJson()]),
+      };
+
+  factory OrderHistoryEntry.fromMap(Map<String, dynamic> m) {
+    final metaRaw = m['meta_json'];
+    final linesRaw = m['lines_json'];
+    Map<String, dynamic> meta = {};
+    if (metaRaw is String && metaRaw.isNotEmpty) {
+      final decoded = jsonDecode(metaRaw);
+      if (decoded is Map) meta = Map<String, dynamic>.from(decoded);
+    }
+    final lines = <EstimateLine>[];
+    if (linesRaw is String && linesRaw.isNotEmpty) {
+      final decoded = jsonDecode(linesRaw);
+      if (decoded is List) {
+        for (final e in decoded) {
+          if (e is Map) {
+            lines.add(EstimateLine.fromJson(Map<String, dynamic>.from(e)));
+          }
+        }
+      }
+    }
+    return OrderHistoryEntry(
+      id: m['id'] as String,
+      projectId: m['project_id'] as String,
+      title: '${m['title'] ?? '注文書'}',
+      issuedAt: DateTime.tryParse('${m['issued_at']}') ?? DateTime.now(),
+      createdAt: DateTime.tryParse('${m['created_at']}') ?? DateTime.now(),
+      meta: meta,
+      lines: lines,
     );
   }
 }
@@ -136,6 +324,7 @@ class AppUser {
 /// 現場プロジェクト
 class SiteProject {
   final String id;
+  final String userId;
   final String name;
   final String address;
   final String contactName;
@@ -144,6 +333,7 @@ class SiteProject {
 
   SiteProject({
     required this.id,
+    this.userId = '',
     required this.name,
     required this.address,
     required this.contactName,
@@ -153,6 +343,7 @@ class SiteProject {
 
   Map<String, dynamic> toMap() => {
         'id': id,
+        'user_id': userId,
         'name': name,
         'address': address,
         'contact_name': contactName,
@@ -162,6 +353,7 @@ class SiteProject {
 
   factory SiteProject.fromMap(Map<String, dynamic> m) => SiteProject(
         id: m['id'] as String,
+        userId: '${m['user_id'] ?? ''}',
         name: m['name'] as String,
         address: m['address'] as String,
         contactName: m['contact_name'] as String,

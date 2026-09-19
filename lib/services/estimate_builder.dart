@@ -522,7 +522,7 @@ class EstimateBuilder {
         qty: anglePcs,
         unit: '個',
         wastePct: 0,
-        note: '開口図形の線本数×2',
+        note: '',
       );
     }
     final openingRunnerM = q['opening_runner_m'];
