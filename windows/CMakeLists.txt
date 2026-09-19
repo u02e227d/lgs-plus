@@ -39,7 +39,10 @@ add_definitions(-DUNICODE -D_UNICODE)
 # of modifying this function.
 function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_17)
-  target_compile_options(${TARGET} PRIVATE /W4 /WX /wd"4100")
+  # /wd4819: Japanese code page 932 cannot represent some plugin source chars;
+  # without this, /WX turns C4819 into C2220 and breaks `printing` on ja-JP.
+  # /utf-8: force UTF-8 source/execution charset for MSVC.
+  target_compile_options(${TARGET} PRIVATE /W4 /WX /wd"4100" /wd"4819" /utf-8)
   target_compile_options(${TARGET} PRIVATE /EHsc)
   target_compile_definitions(${TARGET} PRIVATE "_HAS_EXCEPTIONS=0")
   target_compile_definitions(${TARGET} PRIVATE "$<$<CONFIG:Debug>:_DEBUG>")

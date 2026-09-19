@@ -2,10 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
-import 'package:in_app_purchase_storekit/store_kit_2_wrappers.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'account_plan.dart';
+import 'store_kit_bridge.dart';
 
 class StoreBillingException implements Exception {
   const StoreBillingException(this.code);
@@ -75,7 +75,7 @@ class StoreBilling {
     var product = await _findProductRetry(store, productId);
     if (product == null) {
       try {
-        await AppStore().sync();
+        await syncAppStoreCatalog();
       } catch (_) {}
       product = await _findProductRetry(store, productId);
     }

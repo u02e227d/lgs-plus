@@ -222,11 +222,9 @@ class AppShare {
           const SnackBar(content: Text('ファイルを保存しました')),
         );
       }
-      // 可能なら Finder で表示
-      if (AppPlatform.isDesktop && uri.isScheme('file')) {
-        try {
-          await Process.run('open', ['-R', uri.toFilePath()]);
-        } catch (_) {}
+      // Finder / Explorer で保存先を表示
+      if (AppPlatform.isDesktop) {
+        await _revealInFileManager(uri);
       }
       return true;
     } catch (_) {
@@ -257,12 +255,38 @@ class AppShare {
       allowedExtensions: _extOf(suggested) ?? ['pdf'],
     );
     if (uri == null) return false;
-    if (AppPlatform.isDesktop && uri.isScheme('file')) {
-      try {
-        await Process.run('open', ['-R', uri.toFilePath()]);
-      } catch (_) {}
+    if (AppPlatform.isDesktop) {
+      await _revealInFileManager(uri);
     }
     return true;
+  }
+
+  /// 保存後に OS のファイルマネージャで選択表示（macOS Finder / Windows Explorer）
+  static Future<void> _revealInFileManager(Uri uri) async {
+    try {
+      final String path;
+      if (uri.isScheme('file')) {
+        path = uri.toFilePath();
+      } else if (uri.path.isNotEmpty) {
+        // Windows などで file スキーム無しのパスが来る場合
+        path = uri.path.startsWith('/') && Platform.isWindows
+            ? uri.path.substring(1).replaceAll('/', r'\')
+            : uri.path;
+      } else {
+        return;
+      }
+      if (path.isEmpty) return;
+
+      if (Platform.isMacOS) {
+        await Process.run('open', ['-R', path]);
+      } else if (Platform.isWindows) {
+        // `/select,C:\path\to\file` を 1 引数で渡す
+        await Process.run('explorer.exe', ['/select,$path']);
+      } else if (Platform.isLinux) {
+        final dir = File(path).parent.path;
+        await Process.run('xdg-open', [dir]);
+      }
+    } catch (_) {}
   }
 
   static List<String>? _extOf(String name) {
